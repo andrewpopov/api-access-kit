@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.evaluateApiCommandPrecondition = exports.defineApiCommands = exports.createApiCommandReceipt = void 0;
+exports.evaluateApiCommandPrecondition = exports.evaluateApiCommandIdempotency = exports.defineApiCommands = exports.createApiCommandReceipt = exports.createApiCommandFingerprint = void 0;
 exports.defineApiScopes = defineApiScopes;
 exports.issueApiAccessCredential = issueApiAccessCredential;
 exports.hashApiAccessSecret = hashApiAccessSecret;
@@ -10,8 +10,10 @@ exports.authorizeApiAccess = authorizeApiAccess;
 exports.toApiAccessCredentialMetadata = toApiAccessCredentialMetadata;
 const node_crypto_1 = require("node:crypto");
 var commands_js_1 = require("./commands.js");
+Object.defineProperty(exports, "createApiCommandFingerprint", { enumerable: true, get: function () { return commands_js_1.createApiCommandFingerprint; } });
 Object.defineProperty(exports, "createApiCommandReceipt", { enumerable: true, get: function () { return commands_js_1.createApiCommandReceipt; } });
 Object.defineProperty(exports, "defineApiCommands", { enumerable: true, get: function () { return commands_js_1.defineApiCommands; } });
+Object.defineProperty(exports, "evaluateApiCommandIdempotency", { enumerable: true, get: function () { return commands_js_1.evaluateApiCommandIdempotency; } });
 Object.defineProperty(exports, "evaluateApiCommandPrecondition", { enumerable: true, get: function () { return commands_js_1.evaluateApiCommandPrecondition; } });
 /** Define the finite, application-owned scope vocabulary. Matching is exact. */
 function defineApiScopes(scopes) {

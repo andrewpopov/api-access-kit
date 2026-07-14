@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export interface ApiCommandResource {
   kind: string;
   id: string;
@@ -33,6 +35,16 @@ export interface ApiCommandReceipt<Operation extends string = string> {
   outcome: "APPLIED" | "REPLAYED";
   version: string;
 }
+
+export interface ApiCommandIdempotencyRecord<Operation extends string = string> {
+  fingerprint: string;
+  receipt: ApiCommandReceipt<Operation>;
+}
+
+export type ApiCommandIdempotency<Operation extends string = string> =
+  | { action: "APPLY"; fingerprint: string }
+  | { action: "REPLAY"; fingerprint: string; receipt: ApiCommandReceipt<Operation> }
+  | { action: "REJECT"; reason: "IDEMPOTENCY_KEY_REUSED"; fingerprint: string };
 
 /**
  * Defines a finite application-owned command vocabulary. The kit validates the
@@ -85,6 +97,38 @@ export function evaluateApiCommandPrecondition(
   return { allowed: false, reason: "VERSION_CONFLICT", expectedVersion, actualVersion };
 }
 
+/**
+ * Produces a stable request fingerprint for the host's idempotency ledger.
+ * Reusing a key for a different command must be rejected, never replayed.
+ */
+export function createApiCommandFingerprint<Operation extends string>(
+  command: ApiCommandEnvelope<Operation>,
+): string {
+  const canonicalInput: JsonObject = {
+    v: command.v,
+    operation: command.operation,
+    resource: { kind: command.resource.kind, id: command.resource.id },
+    payload: command.payload,
+    ...(command.expectedVersion !== undefined ? { expectedVersion: command.expectedVersion } : {}),
+  };
+  return `sha256:${createHash("sha256").update(canonicalJson(canonicalInput)).digest("hex")}`;
+}
+
+/**
+ * Resolves a host-loaded idempotency record before any authoritative mutation.
+ * Hosts persist the returned fingerprint with the receipt under idempotencyKey.
+ */
+export function evaluateApiCommandIdempotency<Operation extends string>(
+  command: ApiCommandEnvelope<Operation>,
+  existing: ApiCommandIdempotencyRecord<Operation> | undefined,
+): ApiCommandIdempotency<Operation> {
+  const fingerprint = createApiCommandFingerprint(command);
+  if (!existing) return { action: "APPLY", fingerprint };
+  if (existing.fingerprint === fingerprint)
+    return { action: "REPLAY", fingerprint, receipt: existing.receipt };
+  return { action: "REJECT", reason: "IDEMPOTENCY_KEY_REUSED", fingerprint };
+}
+
 /** Builds a storage-safe receipt for a host-owned idempotency ledger. */
 export function createApiCommandReceipt<Operation extends string>(
   command: ApiCommandEnvelope<Operation>,
@@ -127,6 +171,17 @@ function freezeJsonObject(value: JsonObject): JsonObject {
 function freezeJsonValue(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return Object.freeze(value.map(freezeJsonValue));
   return isJsonObject(value) ? freezeJsonObject(value) : value;
+}
+
+function canonicalJson(value: JsonValue): string {
+  if (value === null || typeof value === "boolean") return String(value);
+  if (typeof value === "number" || typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (!isJsonObject(value)) throw new Error("API command fingerprint requires JSON.");
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`)
+    .join(",")}}`;
 }
 
 function requireText(value: unknown, label: string): asserts value is string {

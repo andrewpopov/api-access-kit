@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Add canonical command fingerprints and replay/reuse detection for idempotency ledgers.
+
 ## 0.2.0
 
 - Add a versioned, engine-neutral API command envelope with operation allowlists.

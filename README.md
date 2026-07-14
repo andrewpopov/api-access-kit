@@ -67,12 +67,15 @@ application vocabulary locally and use multiple explicit scopes when needed.
 
 `defineApiCommands` gives an API a small, versioned command wire contract. A
 command carries an operation, resource identity, JSON payload, idempotency key,
-and an optional expected resource version. The host stores idempotency receipts
-and executes the operation against its own authoritative content model.
+and an optional expected resource version. The host stores a fingerprint and
+receipt under the idempotency key, then executes against its authoritative content model.
 
 ```ts
 const commands = defineApiCommands(["page.update", "blocks.append", "block.update"] as const);
 const command = commands.assert(request.body);
+const idempotency = evaluateApiCommandIdempotency(command, await idempotencyStore.get(command.idempotencyKey));
+if (idempotency.action === "REPLAY") return ok(idempotency.receipt);
+if (idempotency.action === "REJECT") return conflict(idempotency);
 const precondition = evaluateApiCommandPrecondition(command.expectedVersion, current.version);
 if (!precondition.allowed) return conflict(precondition);
 
@@ -82,6 +85,7 @@ const receipt = createApiCommandReceipt(command, { commandId, version: next.vers
 
 The package never executes a command, stores an idempotency ledger, or decides
 what a block means. Mizen can map these commands to Yjs transactions; another
-consumer can adapt them to a different authoritative engine.
+consumer can adapt them to a different authoritative engine. Its fingerprint
+uses canonical JSON, so equivalent object key ordering safely replays.
 
 Run `npm test && npm run typecheck && npm run build && npm run verify:pack`.
