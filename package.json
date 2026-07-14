@@ -1,0 +1,20 @@
+{
+  "name": "@andrewpopov/api-access-kit",
+  "version": "0.1.0",
+  "description": "Pure opaque API credential lifecycle and exact-scope authorization primitives. Hosts own storage, routing, and resource authorization.",
+  "author": "Andrew Popov",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/andrewpopov/api-access-kit.git" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }, "./package.json": "./package.json" },
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "test": "vitest run",
+    "verify:pack": "node scripts/verify-pack.mjs"
+  },
+  "devDependencies": { "@types/node": "^20.14.0", "typescript": "^5.5.0", "vitest": "^4.1.10" }
+}

@@ -1,0 +1,48 @@
+import { describe, expect, it } from "vitest";
+import {
+  authorizeApiAccess,
+  defineApiScopes,
+  hashApiAccessSecret,
+  issueApiAccessCredential,
+  parseApiAccessSecret,
+  toApiAccessCredentialMetadata,
+  verifyApiAccessSecret,
+} from "./index.js";
+
+const pepper = "test-pepper";
+
+describe("api-access-kit", () => {
+  it("issues a one-time opaque secret while retaining only a hash", () => {
+    const issued = issueApiAccessCredential({
+      id: "credential-1",
+      ownerId: "user-1",
+      prefix: "miz",
+      pepper,
+      scopes: ["mizen.items.read", "mizen.items.write"],
+      workspaceId: "workspace-1",
+    });
+    expect(issued.secret).toMatch(/^miz\.credential-1\./);
+    expect(issued.credential.secretHash).not.toContain(issued.secret);
+    expect(parseApiAccessSecret(issued.secret, "miz")).toEqual({ id: "credential-1" });
+    expect(verifyApiAccessSecret(issued.secret, issued.credential.secretHash, pepper)).toBe(true);
+    expect(verifyApiAccessSecret(`${issued.secret}x`, issued.credential.secretHash, pepper)).toBe(false);
+  });
+
+  it("fails closed for lifecycle, scope, and workspace constraints", () => {
+    const credential = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz", pepper, scopes: ["mizen.items.write"], workspaceId: "workspace-1" }).credential;
+    expect(authorizeApiAccess(credential, { scope: "mizen.items.write", workspaceId: "workspace-1" })).toEqual({ allowed: true });
+    expect(authorizeApiAccess(credential, { scope: "mizen.items.read", workspaceId: "workspace-1" })).toEqual({ allowed: false, reason: "SCOPE_DENIED" });
+    expect(authorizeApiAccess(credential, { scope: "mizen.items.write", workspaceId: "workspace-2" })).toEqual({ allowed: false, reason: "WORKSPACE_MISMATCH" });
+    expect(authorizeApiAccess({ ...credential, revokedAt: "2026-01-01T00:00:00Z" }, { scope: "mizen.items.write", workspaceId: "workspace-1" })).toEqual({ allowed: false, reason: "REVOKED" });
+    expect(authorizeApiAccess({ ...credential, expiresAt: "2026-01-01T00:00:00Z" }, { scope: "mizen.items.write", workspaceId: "workspace-1", now: new Date("2026-01-02T00:00:00Z") })).toEqual({ allowed: false, reason: "EXPIRED" });
+  });
+
+  it("keeps scope declaration exact and list metadata secret-safe", () => {
+    const scopes = defineApiScopes(["mizen.items.read", "mizen.items.write"] as const);
+    expect(scopes.has("mizen.items.write")).toBe(true);
+    expect(() => scopes.assert("mizen.items.*")).toThrow("Unknown API scope");
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz", pepper, scopes: ["mizen.items.read"] });
+    expect(toApiAccessCredentialMetadata(issued.credential)).not.toHaveProperty("secretHash");
+    expect(hashApiAccessSecret(issued.secret, pepper)).toBe(issued.credential.secretHash);
+  });
+});
