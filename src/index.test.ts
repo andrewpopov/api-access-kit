@@ -8,6 +8,7 @@ import {
   toApiAccessCredentialMetadata,
   verifyApiAccessSecret,
 } from "./index.js";
+import { createApiCommandReceipt, defineApiCommands, evaluateApiCommandPrecondition } from "./index.js";
 
 const pepper = "test-pepper";
 
@@ -44,5 +45,27 @@ describe("api-access-kit", () => {
     const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz", pepper, scopes: ["mizen.items.read"] });
     expect(toApiAccessCredentialMetadata(issued.credential)).not.toHaveProperty("secretHash");
     expect(hashApiAccessSecret(issued.secret, pepper)).toBe(issued.credential.secretHash);
+  });
+
+  it("validates a versioned command envelope and preserves its idempotency receipt", () => {
+    const commands = defineApiCommands(["blocks.append", "block.update"] as const);
+    const command = commands.assert({
+      v: 1,
+      idempotencyKey: "command-0001",
+      operation: "blocks.append",
+      resource: { kind: "page", id: "page-1" },
+      payload: { blocks: [{ type: "paragraph", text: "Hello" }] },
+      expectedVersion: "7",
+    });
+    expect(evaluateApiCommandPrecondition(command.expectedVersion, "8")).toEqual({ allowed: false, reason: "VERSION_CONFLICT", expectedVersion: "7", actualVersion: "8" });
+    expect(createApiCommandReceipt(command, { commandId: "receipt-1", version: "8" })).toMatchObject({ outcome: "APPLIED", idempotencyKey: "command-0001", version: "8" });
+    expect(() => commands.assert({ ...command, operation: "blocks.erase" })).toThrow("Unknown API command operation");
+  });
+
+  it("rejects malformed or non-JSON command payloads", () => {
+    const commands = defineApiCommands(["blocks.append"] as const);
+    expect(() => commands.assert({ v: 1, idempotencyKey: "short", operation: "blocks.append", resource: { kind: "page", id: "page-1" }, payload: {} })).toThrow("idempotency key");
+    expect(() => commands.assert({ v: 2, idempotencyKey: "command-0002", operation: "blocks.append", resource: { kind: "page", id: "page-1" }, payload: {} })).toThrow("Unsupported API command version");
+    expect(() => commands.assert({ v: 1, idempotencyKey: "command-0002", operation: "blocks.append", resource: { kind: "page", id: "page-1" }, payload: { now: new Date() } })).toThrow("payload must be a JSON object");
   });
 });
