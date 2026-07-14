@@ -63,4 +63,25 @@ Scopes are exact strings. The kit deliberately has no wildcard or implication
 rules because those are easy to misinterpret across applications. Define each
 application vocabulary locally and use multiple explicit scopes when needed.
 
+## Content commands
+
+`defineApiCommands` gives an API a small, versioned command wire contract. A
+command carries an operation, resource identity, JSON payload, idempotency key,
+and an optional expected resource version. The host stores idempotency receipts
+and executes the operation against its own authoritative content model.
+
+```ts
+const commands = defineApiCommands(["page.update", "blocks.append", "block.update"] as const);
+const command = commands.assert(request.body);
+const precondition = evaluateApiCommandPrecondition(command.expectedVersion, current.version);
+if (!precondition.allowed) return conflict(precondition);
+
+// The host checks credential scope and resource authorization before applying.
+const receipt = createApiCommandReceipt(command, { commandId, version: next.version });
+```
+
+The package never executes a command, stores an idempotency ledger, or decides
+what a block means. Mizen can map these commands to Yjs transactions; another
+consumer can adapt them to a different authoritative engine.
+
 Run `npm test && npm run typecheck && npm run build && npm run verify:pack`.

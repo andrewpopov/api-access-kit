@@ -1,5 +1,18 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
+export {
+  createApiCommandReceipt,
+  defineApiCommands,
+  evaluateApiCommandPrecondition,
+  type ApiCommandEnvelope,
+  type ApiCommandPrecondition,
+  type ApiCommandReceipt,
+  type ApiCommandResource,
+  type DefinedApiCommands,
+  type JsonObject,
+  type JsonValue,
+} from "./commands.js";
+
 export type ApiAccessScope = string;
 
 /** Storage-safe credential state. The secret itself never appears in this shape. */
