@@ -8,7 +8,13 @@ import {
   toApiAccessCredentialMetadata,
   verifyApiAccessSecret,
 } from "./index.js";
-import { createApiCommandReceipt, defineApiCommands, evaluateApiCommandPrecondition } from "./index.js";
+import {
+  createApiCommandFingerprint,
+  createApiCommandReceipt,
+  defineApiCommands,
+  evaluateApiCommandIdempotency,
+  evaluateApiCommandPrecondition,
+} from "./index.js";
 
 const pepper = "test-pepper";
 
@@ -58,7 +64,11 @@ describe("api-access-kit", () => {
       expectedVersion: "7",
     });
     expect(evaluateApiCommandPrecondition(command.expectedVersion, "8")).toEqual({ allowed: false, reason: "VERSION_CONFLICT", expectedVersion: "7", actualVersion: "8" });
-    expect(createApiCommandReceipt(command, { commandId: "receipt-1", version: "8" })).toMatchObject({ outcome: "APPLIED", idempotencyKey: "command-0001", version: "8" });
+    const receipt = createApiCommandReceipt(command, { commandId: "receipt-1", version: "8" });
+    expect(receipt).toMatchObject({ outcome: "APPLIED", idempotencyKey: "command-0001", version: "8" });
+    const fingerprint = createApiCommandFingerprint(command);
+    expect(evaluateApiCommandIdempotency(command, { fingerprint, receipt })).toMatchObject({ action: "REPLAY", receipt });
+    expect(evaluateApiCommandIdempotency({ ...command, payload: { blocks: [] } }, { fingerprint, receipt })).toMatchObject({ action: "REJECT", reason: "IDEMPOTENCY_KEY_REUSED" });
     expect(() => commands.assert({ ...command, operation: "blocks.erase" })).toThrow("Unknown API command operation");
   });
 

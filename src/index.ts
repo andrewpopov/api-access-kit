@@ -1,10 +1,14 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 export {
+  createApiCommandFingerprint,
   createApiCommandReceipt,
   defineApiCommands,
+  evaluateApiCommandIdempotency,
   evaluateApiCommandPrecondition,
   type ApiCommandEnvelope,
+  type ApiCommandIdempotency,
+  type ApiCommandIdempotencyRecord,
   type ApiCommandPrecondition,
   type ApiCommandReceipt,
   type ApiCommandResource,

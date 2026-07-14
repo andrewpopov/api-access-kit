@@ -2,7 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.defineApiCommands = defineApiCommands;
 exports.evaluateApiCommandPrecondition = evaluateApiCommandPrecondition;
+exports.createApiCommandFingerprint = createApiCommandFingerprint;
+exports.evaluateApiCommandIdempotency = evaluateApiCommandIdempotency;
 exports.createApiCommandReceipt = createApiCommandReceipt;
+const node_crypto_1 = require("node:crypto");
 /**
  * Defines a finite application-owned command vocabulary. The kit validates the
  * envelope only; apps validate operation payloads and execute against their own
@@ -53,6 +56,32 @@ function evaluateApiCommandPrecondition(expectedVersion, actualVersion) {
         return { allowed: true };
     return { allowed: false, reason: "VERSION_CONFLICT", expectedVersion, actualVersion };
 }
+/**
+ * Produces a stable request fingerprint for the host's idempotency ledger.
+ * Reusing a key for a different command must be rejected, never replayed.
+ */
+function createApiCommandFingerprint(command) {
+    const canonicalInput = {
+        v: command.v,
+        operation: command.operation,
+        resource: { kind: command.resource.kind, id: command.resource.id },
+        payload: command.payload,
+        ...(command.expectedVersion !== undefined ? { expectedVersion: command.expectedVersion } : {}),
+    };
+    return `sha256:${(0, node_crypto_1.createHash)("sha256").update(canonicalJson(canonicalInput)).digest("hex")}`;
+}
+/**
+ * Resolves a host-loaded idempotency record before any authoritative mutation.
+ * Hosts persist the returned fingerprint with the receipt under idempotencyKey.
+ */
+function evaluateApiCommandIdempotency(command, existing) {
+    const fingerprint = createApiCommandFingerprint(command);
+    if (!existing)
+        return { action: "APPLY", fingerprint };
+    if (existing.fingerprint === fingerprint)
+        return { action: "REPLAY", fingerprint, receipt: existing.receipt };
+    return { action: "REJECT", reason: "IDEMPOTENCY_KEY_REUSED", fingerprint };
+}
 /** Builds a storage-safe receipt for a host-owned idempotency ledger. */
 function createApiCommandReceipt(command, input) {
     requireText(input.commandId, "API command id");
@@ -93,6 +122,20 @@ function freezeJsonValue(value) {
     if (Array.isArray(value))
         return Object.freeze(value.map(freezeJsonValue));
     return isJsonObject(value) ? freezeJsonObject(value) : value;
+}
+function canonicalJson(value) {
+    if (value === null || typeof value === "boolean")
+        return String(value);
+    if (typeof value === "number" || typeof value === "string")
+        return JSON.stringify(value);
+    if (Array.isArray(value))
+        return `[${value.map(canonicalJson).join(",")}]`;
+    if (!isJsonObject(value))
+        throw new Error("API command fingerprint requires JSON.");
+    return `{${Object.keys(value)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+        .join(",")}}`;
 }
 function requireText(value, label) {
     if (typeof value !== "string" || !value.trim())
