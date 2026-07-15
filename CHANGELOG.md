@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Define the canonical v1 credential format, indexed public-id lookup, and
+  secret-only constant-time verification.
+- Persist credential format, hash, and pepper versions and support a named
+  pepper verification key ring during rotation.
+
 ## 0.3.0
 
 - Add canonical command fingerprints and replay/reuse detection for idempotency ledgers.

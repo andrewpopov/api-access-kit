@@ -6,6 +6,7 @@ exports.issueApiAccessCredential = issueApiAccessCredential;
 exports.hashApiAccessSecret = hashApiAccessSecret;
 exports.verifyApiAccessSecret = verifyApiAccessSecret;
 exports.parseApiAccessSecret = parseApiAccessSecret;
+exports.authenticateApiAccessCredential = authenticateApiAccessCredential;
 exports.authorizeApiAccess = authorizeApiAccess;
 exports.toApiAccessCredentialMetadata = toApiAccessCredentialMetadata;
 const node_crypto_1 = require("node:crypto");
@@ -35,12 +36,16 @@ function defineApiScopes(scopes) {
         },
     });
 }
-/** Issue an opaque secret once; persist only `credential.secretHash`. */
+/**
+ * Issue a v1 opaque credential once; persist only the public id and a hash of
+ * its random secret segment. `prefix` is literal (for example `cairn_`).
+ */
 function issueApiAccessCredential(input) {
     requireText(input.id, "Credential id");
     requireText(input.ownerId, "Credential owner id");
     requireText(input.prefix, "Credential prefix");
-    requireText(input.pepper, "Credential pepper");
+    requireText(input.pepper.version, "Credential pepper version");
+    requireText(input.pepper.value, "Credential pepper");
     if (!/^[a-z][a-z0-9_-]*$/i.test(input.prefix)) {
         throw new Error("Credential prefix must contain only letters, numbers, underscores, or dashes.");
     }
@@ -49,11 +54,14 @@ function issueApiAccessCredential(input) {
     if (!Number.isInteger(secretBytes) || secretBytes < 16) {
         throw new Error("Credential secrets require at least 16 random bytes.");
     }
-    const secret = `${input.prefix}.${input.id}.${(0, node_crypto_1.randomBytes)(secretBytes).toString("base64url")}`;
+    const secret = `${input.prefix}${input.id}.${(0, node_crypto_1.randomBytes)(secretBytes).toString("base64url")}`;
     const credential = Object.freeze({
         id: input.id,
         ownerId: input.ownerId,
-        secretHash: hashApiAccessSecret(secret, input.pepper),
+        formatVersion: 1,
+        hashVersion: input.hashVersion ?? "sha256-peppered-secret-v1",
+        pepperVersion: input.pepper.version,
+        secretHash: hashApiAccessSecret(parseApiAccessSecret(secret, input.prefix).secret, input.pepper.value),
         scopes,
         createdAt: input.createdAt ?? new Date().toISOString(),
         workspaceId: input.workspaceId,
@@ -75,10 +83,44 @@ function verifyApiAccessSecret(secret, storedHash, pepper) {
 }
 /** Parse the public credential id from an opaque secret for indexed lookup. */
 function parseApiAccessSecret(secret, prefix) {
-    const [foundPrefix, id, entropy, ...rest] = secret.split(".");
-    if (foundPrefix !== prefix || !id || !entropy || rest.length > 0 || entropy.length < 20)
+    if (!secret.startsWith(prefix))
         return undefined;
-    return { id };
+    const rest = secret.slice(prefix.length);
+    const dot = rest.indexOf(".");
+    if (dot < 1 || dot !== rest.lastIndexOf("."))
+        return undefined;
+    const id = rest.slice(0, dot);
+    const entropy = rest.slice(dot + 1);
+    if (!/^[A-Za-z0-9_-]+$/.test(id) || !/^[A-Za-z0-9_-]{20,}$/.test(entropy))
+        return undefined;
+    return { id, secret: entropy };
+}
+/**
+ * Perform indexed public-id lookup followed by constant-time secret comparison.
+ * This is deliberately lifecycle-only: hosts still apply their resource policy
+ * after an allowed credential is mapped to a principal.
+ */
+async function authenticateApiAccessCredential(input) {
+    const parsed = parseApiAccessSecret(input.rawCredential, input.prefix);
+    if (!parsed)
+        return { ok: false, reason: "MALFORMED" };
+    const credential = await input.store.findById(parsed.id);
+    if (!credential)
+        return { ok: false, reason: "NOT_FOUND" };
+    if (credential.formatVersion !== 1)
+        return { ok: false, reason: "MALFORMED" };
+    const pepper = input.peppers.find((candidate) => candidate.version === credential.pepperVersion);
+    if (!pepper)
+        return { ok: false, reason: "UNKNOWN_PEPPER_VERSION" };
+    if (!verifyApiAccessSecret(parsed.secret, credential.secretHash, pepper.value)) {
+        return { ok: false, reason: "HASH_MISMATCH" };
+    }
+    if (credential.revokedAt)
+        return { ok: false, reason: "REVOKED" };
+    if (credential.expiresAt && new Date(credential.expiresAt).getTime() <= (input.now ?? new Date()).getTime()) {
+        return { ok: false, reason: "EXPIRED" };
+    }
+    return { ok: true, credential };
 }
 /**
  * Evaluates only credential lifecycle, exact scope, and optional workspace

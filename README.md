@@ -9,9 +9,9 @@ request middleware, user session, or product resource authorization.
 
 API access is evaluated in this order:
 
-1. Parse the opaque credential id and load the host-owned credential record.
-2. Constant-time verify the raw secret against the stored hash.
-3. Call `authorizeApiAccess` for revocation, expiry, exact scope, and workspace binding.
+1. Parse the versioned opaque credential's public id and load the host-owned credential record by index.
+2. Select the stored record's pepper version and constant-time verify only the random secret segment.
+3. Call `authorizeApiAccess` for exact scope and workspace binding.
 4. Authorize the credential **owner** against the host's resource policy.
 
 Step 4 is mandatory. A scope permits an API operation category; it never grants
@@ -43,8 +43,8 @@ const issued = issueApiAccessCredential({
   id: crypto.randomUUID(),
   ownerId: user.id,
   workspaceId,
-  prefix: "miz",
-  pepper: process.env.API_ACCESS_PEPPER!,
+  prefix: "miz_",
+  pepper: { version: "2026-07", value: process.env.API_ACCESS_PEPPER! },
   scopes: ["mizen.items.read", "mizen.items.write"],
   expiresAt,
 });
@@ -53,9 +53,17 @@ await credentialStore.insert(issued.credential); // stores only `secretHash`
 return issued.secret; // reveal once, never list it again
 ```
 
-`prefix`, `id`, and secret entropy are separated by dots so a host can parse the
-credential id for indexed lookup. The id is public metadata; only the random
-secret segment authenticates the credential.
+The v1 wire format is `<prefix><id>.<random-secret>`, for example
+`miz_credential-1.abc…`. The id is public indexed metadata; only the random
+secret segment authenticates the credential. Persist `formatVersion`,
+`hashVersion`, and `pepperVersion` with the hash. Keep prior named peppers in
+the verification key ring until their credentials have rotated; never rehash or
+log a raw credential during rotation.
+
+For HTTP, call `authenticateApiAccessCredential` from the host's raw-credential
+adapter, then let the HTTP kit map the successful record to its request context.
+Do not make an HTTP middleware hash the whole credential before lookup: that
+breaks public-id lookup and secret-only verification.
 
 ## Scope model
 
