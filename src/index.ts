@@ -23,6 +23,12 @@ export type ApiAccessScope = string;
 export interface ApiAccessCredential {
   id: string;
   ownerId: string;
+  /** Public wire-format version. Persisted so format migrations are explicit. */
+  formatVersion: 1;
+  /** Host-defined secret hash algorithm/version. */
+  hashVersion: string;
+  /** Identifies the pepper used to create `secretHash`. */
+  pepperVersion: string;
   secretHash: string;
   scopes: readonly ApiAccessScope[];
   createdAt: string;
@@ -58,11 +64,42 @@ export interface IssueApiAccessCredentialInput {
   ownerId: string;
   scopes: readonly ApiAccessScope[];
   prefix: string;
-  pepper: string;
+  pepper: ApiAccessPepper;
+  hashVersion?: string;
   createdAt?: string;
   workspaceId?: string;
   expiresAt?: string;
   secretBytes?: number;
+}
+
+/** A named verification secret. Keep old entries until all old credentials rotate. */
+export interface ApiAccessPepper {
+  version: string;
+  value: string;
+}
+
+export interface ApiAccessCredentialStore {
+  findById(id: string): Promise<ApiAccessCredential | null>;
+}
+
+export type ApiAccessAuthenticationFailure =
+  | "MALFORMED"
+  | "NOT_FOUND"
+  | "HASH_MISMATCH"
+  | "REVOKED"
+  | "EXPIRED"
+  | "UNKNOWN_PEPPER_VERSION";
+
+export type ApiAccessAuthentication =
+  | { ok: true; credential: ApiAccessCredential }
+  | { ok: false; reason: ApiAccessAuthenticationFailure };
+
+export interface AuthenticateApiAccessCredentialInput {
+  rawCredential: string;
+  prefix: string;
+  store: ApiAccessCredentialStore;
+  peppers: readonly ApiAccessPepper[];
+  now?: Date;
 }
 
 export interface DefinedApiScopes<Scopes extends string> {
@@ -91,14 +128,18 @@ export function defineApiScopes<const Scopes extends string>(
   });
 }
 
-/** Issue an opaque secret once; persist only `credential.secretHash`. */
+/**
+ * Issue a v1 opaque credential once; persist only the public id and a hash of
+ * its random secret segment. `prefix` is literal (for example `cairn_`).
+ */
 export function issueApiAccessCredential(
   input: IssueApiAccessCredentialInput,
 ): IssuedApiAccessCredential {
   requireText(input.id, "Credential id");
   requireText(input.ownerId, "Credential owner id");
   requireText(input.prefix, "Credential prefix");
-  requireText(input.pepper, "Credential pepper");
+  requireText(input.pepper.version, "Credential pepper version");
+  requireText(input.pepper.value, "Credential pepper");
   if (!/^[a-z][a-z0-9_-]*$/i.test(input.prefix)) {
     throw new Error("Credential prefix must contain only letters, numbers, underscores, or dashes.");
   }
@@ -107,11 +148,14 @@ export function issueApiAccessCredential(
   if (!Number.isInteger(secretBytes) || secretBytes < 16) {
     throw new Error("Credential secrets require at least 16 random bytes.");
   }
-  const secret = `${input.prefix}.${input.id}.${randomBytes(secretBytes).toString("base64url")}`;
+  const secret = `${input.prefix}${input.id}.${randomBytes(secretBytes).toString("base64url")}`;
   const credential: ApiAccessCredential = Object.freeze({
     id: input.id,
     ownerId: input.ownerId,
-    secretHash: hashApiAccessSecret(secret, input.pepper),
+    formatVersion: 1,
+    hashVersion: input.hashVersion ?? "sha256-peppered-secret-v1",
+    pepperVersion: input.pepper.version,
+    secretHash: hashApiAccessSecret(parseApiAccessSecret(secret, input.prefix)!.secret, input.pepper.value),
     scopes,
     createdAt: input.createdAt ?? new Date().toISOString(),
     workspaceId: input.workspaceId,
@@ -128,11 +172,7 @@ export function hashApiAccessSecret(secret: string, pepper: string): string {
 }
 
 /** Constant-time comparison for a host's stored credential hash. */
-export function verifyApiAccessSecret(
-  secret: string,
-  storedHash: string,
-  pepper: string,
-): boolean {
+export function verifyApiAccessSecret(secret: string, storedHash: string, pepper: string): boolean {
   const candidate = Buffer.from(hashApiAccessSecret(secret, pepper));
   const stored = Buffer.from(storedHash);
   return candidate.length === stored.length && timingSafeEqual(candidate, stored);
@@ -142,10 +182,40 @@ export function verifyApiAccessSecret(
 export function parseApiAccessSecret(
   secret: string,
   prefix: string,
-): { id: string } | undefined {
-  const [foundPrefix, id, entropy, ...rest] = secret.split(".");
-  if (foundPrefix !== prefix || !id || !entropy || rest.length > 0 || entropy.length < 20) return undefined;
-  return { id };
+): { id: string; secret: string } | undefined {
+  if (!secret.startsWith(prefix)) return undefined;
+  const rest = secret.slice(prefix.length);
+  const dot = rest.indexOf(".");
+  if (dot < 1 || dot !== rest.lastIndexOf(".")) return undefined;
+  const id = rest.slice(0, dot);
+  const entropy = rest.slice(dot + 1);
+  if (!/^[A-Za-z0-9_-]+$/.test(id) || !/^[A-Za-z0-9_-]{20,}$/.test(entropy)) return undefined;
+  return { id, secret: entropy };
+}
+
+/**
+ * Perform indexed public-id lookup followed by constant-time secret comparison.
+ * This is deliberately lifecycle-only: hosts still apply their resource policy
+ * after an allowed credential is mapped to a principal.
+ */
+export async function authenticateApiAccessCredential(
+  input: AuthenticateApiAccessCredentialInput,
+): Promise<ApiAccessAuthentication> {
+  const parsed = parseApiAccessSecret(input.rawCredential, input.prefix);
+  if (!parsed) return { ok: false, reason: "MALFORMED" };
+  const credential = await input.store.findById(parsed.id);
+  if (!credential) return { ok: false, reason: "NOT_FOUND" };
+  if (credential.formatVersion !== 1) return { ok: false, reason: "MALFORMED" };
+  const pepper = input.peppers.find((candidate) => candidate.version === credential.pepperVersion);
+  if (!pepper) return { ok: false, reason: "UNKNOWN_PEPPER_VERSION" };
+  if (!verifyApiAccessSecret(parsed.secret, credential.secretHash, pepper.value)) {
+    return { ok: false, reason: "HASH_MISMATCH" };
+  }
+  if (credential.revokedAt) return { ok: false, reason: "REVOKED" };
+  if (credential.expiresAt && new Date(credential.expiresAt).getTime() <= (input.now ?? new Date()).getTime()) {
+    return { ok: false, reason: "EXPIRED" };
+  }
+  return { ok: true, credential };
 }
 
 /**

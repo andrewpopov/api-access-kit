@@ -1,6 +1,6 @@
 {
   "name": "@andrewpopov/api-access-kit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pure opaque API credential lifecycle and exact-scope authorization primitives. Hosts own storage, routing, and resource authorization.",
   "author": "Andrew Popov",
   "license": "MIT",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   authorizeApiAccess,
+  authenticateApiAccessCredential,
   defineApiScopes,
   hashApiAccessSecret,
   issueApiAccessCredential,
@@ -16,27 +17,28 @@ import {
   evaluateApiCommandPrecondition,
 } from "./index.js";
 
-const pepper = "test-pepper";
+const pepper = { version: "2026-01", value: "test-pepper" };
 
 describe("api-access-kit", () => {
   it("issues a one-time opaque secret while retaining only a hash", () => {
     const issued = issueApiAccessCredential({
       id: "credential-1",
       ownerId: "user-1",
-      prefix: "miz",
+      prefix: "miz_",
       pepper,
       scopes: ["mizen.items.read", "mizen.items.write"],
       workspaceId: "workspace-1",
     });
-    expect(issued.secret).toMatch(/^miz\.credential-1\./);
+    expect(issued.secret).toMatch(/^miz_credential-1\./);
     expect(issued.credential.secretHash).not.toContain(issued.secret);
-    expect(parseApiAccessSecret(issued.secret, "miz")).toEqual({ id: "credential-1" });
-    expect(verifyApiAccessSecret(issued.secret, issued.credential.secretHash, pepper)).toBe(true);
-    expect(verifyApiAccessSecret(`${issued.secret}x`, issued.credential.secretHash, pepper)).toBe(false);
+    expect(parseApiAccessSecret(issued.secret, "miz_")).toMatchObject({ id: "credential-1" });
+    const parsed = parseApiAccessSecret(issued.secret, "miz_")!;
+    expect(verifyApiAccessSecret(parsed.secret, issued.credential.secretHash, pepper.value)).toBe(true);
+    expect(verifyApiAccessSecret(`${parsed.secret}x`, issued.credential.secretHash, pepper.value)).toBe(false);
   });
 
   it("fails closed for lifecycle, scope, and workspace constraints", () => {
-    const credential = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz", pepper, scopes: ["mizen.items.write"], workspaceId: "workspace-1" }).credential;
+    const credential = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.write"], workspaceId: "workspace-1" }).credential;
     expect(authorizeApiAccess(credential, { scope: "mizen.items.write", workspaceId: "workspace-1" })).toEqual({ allowed: true });
     expect(authorizeApiAccess(credential, { scope: "mizen.items.read", workspaceId: "workspace-1" })).toEqual({ allowed: false, reason: "SCOPE_DENIED" });
     expect(authorizeApiAccess(credential, { scope: "mizen.items.write", workspaceId: "workspace-2" })).toEqual({ allowed: false, reason: "WORKSPACE_MISMATCH" });
@@ -48,9 +50,17 @@ describe("api-access-kit", () => {
     const scopes = defineApiScopes(["mizen.items.read", "mizen.items.write"] as const);
     expect(scopes.has("mizen.items.write")).toBe(true);
     expect(() => scopes.assert("mizen.items.*")).toThrow("Unknown API scope");
-    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz", pepper, scopes: ["mizen.items.read"] });
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] });
     expect(toApiAccessCredentialMetadata(issued.credential)).not.toHaveProperty("secretHash");
-    expect(hashApiAccessSecret(issued.secret, pepper)).toBe(issued.credential.secretHash);
+    expect(hashApiAccessSecret(parseApiAccessSecret(issued.secret, "miz_")!.secret, pepper.value)).toBe(issued.credential.secretHash);
+  });
+
+  it("uses indexed public-id lookup and a pepper key ring without logging or storing the raw secret", async () => {
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] });
+    const store = { findById: async (id: string) => id === issued.credential.id ? issued.credential : null };
+    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [{ version: "old", value: "old-pepper" }, pepper] })).resolves.toMatchObject({ ok: true, credential: { id: "credential-1" } });
+    await expect(authenticateApiAccessCredential({ rawCredential: `${issued.secret}x`, prefix: "miz_", store, peppers: [pepper] })).resolves.toEqual({ ok: false, reason: "HASH_MISMATCH" });
+    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [] })).resolves.toEqual({ ok: false, reason: "UNKNOWN_PEPPER_VERSION" });
   });
 
   it("validates a versioned command envelope and preserves its idempotency receipt", () => {
