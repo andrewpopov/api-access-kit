@@ -54,7 +54,46 @@ export interface ApiAccessPepper {
 export interface ApiAccessCredentialStore {
     findById(id: string): Promise<ApiAccessCredential | null>;
 }
-export type ApiAccessAuthenticationFailure = "MALFORMED" | "NOT_FOUND" | "HASH_MISMATCH" | "REVOKED" | "EXPIRED" | "UNKNOWN_PEPPER_VERSION";
+/**
+ * The persistence seam for host-owned credential lifecycle operations.
+ *
+ * Hosts retain their own transaction, audit, and authorization semantics. In
+ * particular, a host may keep a replacement as a new row or replace the
+ * credential material inside an existing application record.
+ */
+export interface ApiAccessCredentialLifecycleStore extends ApiAccessCredentialStore {
+    create(credential: ApiAccessCredential): Promise<void>;
+    replaceActive(input: ApiAccessCredentialReplacement): Promise<ApiAccessCredentialLifecycleMutation>;
+    revokeActive(input: ApiAccessCredentialRevocation): Promise<ApiAccessCredentialLifecycleMutation>;
+    touchLastUsed(id: string, lastUsedAt: string): Promise<void>;
+}
+export interface ApiAccessCredentialReplacement {
+    previousCredentialId: string;
+    replacement: ApiAccessCredential;
+    revokedAt: string;
+}
+export interface ApiAccessCredentialRevocation {
+    credentialId: string;
+    revokedAt: string;
+}
+export type ApiAccessCredentialLifecycleMutation = {
+    applied: true;
+} | {
+    applied: false;
+    reason: "NOT_FOUND" | "NOT_ACTIVE" | "CONFLICT";
+};
+/** A sandboxed fixture for proving a host lifecycle adapter honors this contract. */
+export interface ApiAccessCredentialLifecycleConformanceInput {
+    store: ApiAccessCredentialLifecycleStore;
+    active: ApiAccessCredential;
+    replacement: ApiAccessCredential;
+    now?: string;
+}
+export interface ApiAccessCredentialLifecycleConformanceResult {
+    readonly priorCredentialRetained: boolean;
+    readonly replacementCredentialId: string;
+}
+export type ApiAccessAuthenticationFailure = "MALFORMED" | "INVALID_PEPPER_RING" | "NOT_FOUND" | "HASH_MISMATCH" | "REVOKED" | "EXPIRED" | "UNKNOWN_PEPPER_VERSION";
 export type ApiAccessAuthentication = {
     ok: true;
     credential: ApiAccessCredential;
@@ -69,6 +108,22 @@ export interface AuthenticateApiAccessCredentialInput {
     peppers: readonly ApiAccessPepper[];
     now?: Date;
 }
+export interface DefinedApiAccessPepperRing {
+    readonly values: readonly ApiAccessPepper[];
+    readonly primary: ApiAccessPepper;
+    find(version: string): ApiAccessPepper | undefined;
+}
+export type ApiAccessCredentialStatus = "ACTIVE" | "REVOKED" | "EXPIRED" | "INVALID";
+export interface IssueReplacementApiAccessCredentialInput {
+    credential: ApiAccessCredential;
+    id: string;
+    prefix: string;
+    pepper: ApiAccessPepper;
+    hashVersion?: string;
+    createdAt?: string;
+    now?: Date;
+    secretBytes?: number;
+}
 export interface DefinedApiScopes<Scopes extends string> {
     readonly values: readonly Scopes[];
     has(scope: string): scope is Scopes;
@@ -77,10 +132,29 @@ export interface DefinedApiScopes<Scopes extends string> {
 /** Define the finite, application-owned scope vocabulary. Matching is exact. */
 export declare function defineApiScopes<const Scopes extends string>(scopes: readonly Scopes[]): DefinedApiScopes<Scopes>;
 /**
+ * Validate a named pepper ring before a host uses it for issuance or
+ * authentication. Environment-variable parsing remains host-owned so this
+ * package never dictates configuration names or secret providers.
+ */
+export declare function defineApiAccessPepperRing(peppers: readonly ApiAccessPepper[]): DefinedApiAccessPepperRing;
+/**
  * Issue a v1 opaque credential once; persist only the public id and a hash of
  * its random secret segment. `prefix` is literal (for example `cairn_`).
  */
 export declare function issueApiAccessCredential(input: IssueApiAccessCredentialInput): IssuedApiAccessCredential;
+/**
+ * Issue fresh material for an active credential while preserving only the
+ * portable lifecycle fields. The host atomically applies the replacement and
+ * decides whether that means a new application row or an in-place update.
+ */
+export declare function issueReplacementApiAccessCredential(input: IssueReplacementApiAccessCredentialInput): IssuedApiAccessCredential;
+/**
+ * Exercise a host adapter in an isolated store. This performs real lifecycle
+ * writes, so consumers must provide a disposable fixture rather than a
+ * production store. It deliberately verifies only the portable credential
+ * contract; host audit, row lineage, and authorization remain host concerns.
+ */
+export declare function runApiAccessCredentialLifecycleConformance(input: ApiAccessCredentialLifecycleConformanceInput): Promise<ApiAccessCredentialLifecycleConformanceResult>;
 /** A deterministic hash suitable for host-owned credential lookup and storage. */
 export declare function hashApiAccessSecret(secret: string, pepper: string): string;
 /** Constant-time comparison for a host's stored credential hash. */
@@ -96,6 +170,10 @@ export declare function parseApiAccessSecret(secret: string, prefix: string): {
  * after an allowed credential is mapped to a principal.
  */
 export declare function authenticateApiAccessCredential(input: AuthenticateApiAccessCredentialInput): Promise<ApiAccessAuthentication>;
+/** Evaluate persisted credential lifecycle state without applying a scope. */
+export declare function getApiAccessCredentialStatus(credential: Pick<ApiAccessCredential, "revokedAt" | "expiresAt">, now?: Date): ApiAccessCredentialStatus;
+/** Return a safe human-readable representation using only public metadata. */
+export declare function formatApiAccessCredentialMask(prefix: string, credentialId: string): string;
 /**
  * Evaluates only credential lifecycle, exact scope, and optional workspace
  * binding. A successful decision is not product authorization: callers must
