@@ -26,13 +26,13 @@ Step 4 is mandatory. A scope permits an API operation category; it never grants
 access to a product resource by itself.
 
 ```ts
-const mizenScopes = defineApiScopes([
-  "mizen.items.read",
-  "mizen.items.write",
+const exampleScopes = defineApiScopes([
+  "example.items.read",
+  "example.items.write",
 ] as const);
 
 const decision = authorizeApiAccess(credential, {
-  scope: "mizen.items.write",
+  scope: "example.items.write",
   workspaceId,
 });
 if (!decision.allowed) throw new ForbiddenError(decision.reason);
@@ -40,9 +40,10 @@ if (!decision.allowed) throw new ForbiddenError(decision.reason);
 await authorization.requireSpace("item.edit", workspaceId, credential.ownerId, spaceId, itemId);
 ```
 
-For Mizen, a document-content write must then use the same Y.Doc-authoritative
-command path as collaboration. Do not replace a JSON, HTML, or search projection
-through a REST endpoint.
+Step 4 always runs through the host's own resource-authorization path. If a
+write also has to go through an authoritative content pipeline (an event log,
+a CRDT document, a queue), route the write there rather than replacing it with
+a projection written directly through this endpoint.
 
 ## Issuing a credential
 
@@ -51,9 +52,9 @@ const issued = issueApiAccessCredential({
   id: crypto.randomUUID(),
   ownerId: user.id,
   workspaceId,
-  prefix: "miz_",
+  prefix: "example_",
   pepper: { version: "2026-07", value: process.env.API_ACCESS_PEPPER! },
-  scopes: ["mizen.items.read", "mizen.items.write"],
+  scopes: ["example.items.read", "example.items.write"],
   expiresAt,
 });
 
@@ -62,7 +63,7 @@ return issued.secret; // reveal once, never list it again
 ```
 
 The v1 wire format is `<prefix><id>.<random-secret>`, for example
-`miz_credential-1.abc…`. The id is public indexed metadata; only the random
+`example_credential-1.abc…`. The id is public indexed metadata; only the random
 secret segment authenticates the credential. Persist `formatVersion`,
 `hashVersion`, and `pepperVersion` with the hash. Keep prior named peppers in
 the verification key ring until their credentials have rotated; never rehash or
@@ -89,7 +90,7 @@ The host applies both sides atomically through `ApiAccessCredentialLifecycleStor
 const replacement = issueReplacementApiAccessCredential({
   credential: current,
   id: crypto.randomUUID(),
-  prefix: "miz_",
+  prefix: "example_",
   pepper: pepperRing.primary,
 });
 
@@ -138,8 +139,8 @@ const receipt = createApiCommandReceipt(command, { commandId, version: next.vers
 ```
 
 The package never executes a command, stores an idempotency ledger, or decides
-what a block means. Mizen can map these commands to Yjs transactions; another
-consumer can adapt them to a different authoritative engine. Its fingerprint
+what a block means. One consumer might map these commands to CRDT transactions;
+another can adapt them to a different authoritative engine. Its fingerprint
 uses canonical JSON, so equivalent object key ordering safely replays.
 
 Run `npm test && npm run typecheck && npm run build && npm run verify:pack`.
