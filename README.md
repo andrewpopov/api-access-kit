@@ -5,6 +5,14 @@ hashes it for host storage, evaluates exact named scopes and lifecycle state, an
 keeps workspace binding explicit. It does not own a database, HTTP framework,
 request middleware, user session, or product resource authorization.
 
+## Install
+
+This package is distributed through immutable GitHub tags:
+
+```bash
+npm install github:andrewpopov/api-access-kit#v0.4.0
+```
+
 ## Security boundary
 
 API access is evaluated in this order:
