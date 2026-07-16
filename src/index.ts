@@ -82,8 +82,51 @@ export interface ApiAccessCredentialStore {
   findById(id: string): Promise<ApiAccessCredential | null>;
 }
 
+/**
+ * The persistence seam for host-owned credential lifecycle operations.
+ *
+ * Hosts retain their own transaction, audit, and authorization semantics. In
+ * particular, a host may keep a replacement as a new row or replace the
+ * credential material inside an existing application record.
+ */
+export interface ApiAccessCredentialLifecycleStore extends ApiAccessCredentialStore {
+  create(credential: ApiAccessCredential): Promise<void>;
+  replaceActive(input: ApiAccessCredentialReplacement): Promise<ApiAccessCredentialLifecycleMutation>;
+  revokeActive(input: ApiAccessCredentialRevocation): Promise<ApiAccessCredentialLifecycleMutation>;
+  touchLastUsed(id: string, lastUsedAt: string): Promise<void>;
+}
+
+export interface ApiAccessCredentialReplacement {
+  previousCredentialId: string;
+  replacement: ApiAccessCredential;
+  revokedAt: string;
+}
+
+export interface ApiAccessCredentialRevocation {
+  credentialId: string;
+  revokedAt: string;
+}
+
+export type ApiAccessCredentialLifecycleMutation =
+  | { applied: true }
+  | { applied: false; reason: "NOT_FOUND" | "NOT_ACTIVE" | "CONFLICT" };
+
+/** A sandboxed fixture for proving a host lifecycle adapter honors this contract. */
+export interface ApiAccessCredentialLifecycleConformanceInput {
+  store: ApiAccessCredentialLifecycleStore;
+  active: ApiAccessCredential;
+  replacement: ApiAccessCredential;
+  now?: string;
+}
+
+export interface ApiAccessCredentialLifecycleConformanceResult {
+  readonly priorCredentialRetained: boolean;
+  readonly replacementCredentialId: string;
+}
+
 export type ApiAccessAuthenticationFailure =
   | "MALFORMED"
+  | "INVALID_PEPPER_RING"
   | "NOT_FOUND"
   | "HASH_MISMATCH"
   | "REVOKED"
@@ -100,6 +143,25 @@ export interface AuthenticateApiAccessCredentialInput {
   store: ApiAccessCredentialStore;
   peppers: readonly ApiAccessPepper[];
   now?: Date;
+}
+
+export interface DefinedApiAccessPepperRing {
+  readonly values: readonly ApiAccessPepper[];
+  readonly primary: ApiAccessPepper;
+  find(version: string): ApiAccessPepper | undefined;
+}
+
+export type ApiAccessCredentialStatus = "ACTIVE" | "REVOKED" | "EXPIRED" | "INVALID";
+
+export interface IssueReplacementApiAccessCredentialInput {
+  credential: ApiAccessCredential;
+  id: string;
+  prefix: string;
+  pepper: ApiAccessPepper;
+  hashVersion?: string;
+  createdAt?: string;
+  now?: Date;
+  secretBytes?: number;
 }
 
 export interface DefinedApiScopes<Scopes extends string> {
@@ -124,6 +186,35 @@ export function defineApiScopes<const Scopes extends string>(
     assert(scope: string): Scopes {
       if (!known.has(scope)) throw new Error(`Unknown API scope: ${scope}`);
       return scope as Scopes;
+    },
+  });
+}
+
+/**
+ * Validate a named pepper ring before a host uses it for issuance or
+ * authentication. Environment-variable parsing remains host-owned so this
+ * package never dictates configuration names or secret providers.
+ */
+export function defineApiAccessPepperRing(
+  peppers: readonly ApiAccessPepper[],
+): DefinedApiAccessPepperRing {
+  if (peppers.length === 0) throw new Error("At least one API credential pepper is required.");
+  const seen = new Set<string>();
+  const values = peppers.map((pepper) => {
+    requireText(pepper.version, "Credential pepper version");
+    requireText(pepper.value, "Credential pepper");
+    if (seen.has(pepper.version)) {
+      throw new Error(`Duplicate credential pepper version: ${pepper.version}`);
+    }
+    seen.add(pepper.version);
+    return Object.freeze({ version: pepper.version, value: pepper.value });
+  });
+  const frozen = Object.freeze(values);
+  return Object.freeze({
+    values: frozen,
+    primary: frozen[0],
+    find(version: string): ApiAccessPepper | undefined {
+      return frozen.find((candidate) => candidate.version === version);
     },
   });
 }
@@ -162,6 +253,89 @@ export function issueApiAccessCredential(
     expiresAt: input.expiresAt,
   });
   return Object.freeze({ credential, secret });
+}
+
+/**
+ * Issue fresh material for an active credential while preserving only the
+ * portable lifecycle fields. The host atomically applies the replacement and
+ * decides whether that means a new application row or an in-place update.
+ */
+export function issueReplacementApiAccessCredential(
+  input: IssueReplacementApiAccessCredentialInput,
+): IssuedApiAccessCredential {
+  if (getApiAccessCredentialStatus(input.credential, input.now) !== "ACTIVE") {
+    throw new Error("Only an active API credential can be replaced.");
+  }
+  return issueApiAccessCredential({
+    id: input.id,
+    ownerId: input.credential.ownerId,
+    scopes: input.credential.scopes,
+    prefix: input.prefix,
+    pepper: input.pepper,
+    hashVersion: input.hashVersion,
+    createdAt: input.createdAt,
+    workspaceId: input.credential.workspaceId,
+    expiresAt: input.credential.expiresAt,
+    secretBytes: input.secretBytes,
+  });
+}
+
+/**
+ * Exercise a host adapter in an isolated store. This performs real lifecycle
+ * writes, so consumers must provide a disposable fixture rather than a
+ * production store. It deliberately verifies only the portable credential
+ * contract; host audit, row lineage, and authorization remain host concerns.
+ */
+export async function runApiAccessCredentialLifecycleConformance(
+  input: ApiAccessCredentialLifecycleConformanceInput,
+): Promise<ApiAccessCredentialLifecycleConformanceResult> {
+  if (input.active.id === input.replacement.id) {
+    throw new Error("Conformance replacement credential id must differ from the active credential id.");
+  }
+  const now = input.now ?? new Date().toISOString();
+  const nowDate = new Date(now);
+  if (Number.isNaN(nowDate.getTime())) {
+    throw new Error("Conformance timestamp must be an ISO timestamp.");
+  }
+  if (getApiAccessCredentialStatus(input.active, nowDate) !== "ACTIVE") {
+    throw new Error("Conformance active credential must be active.");
+  }
+  if (getApiAccessCredentialStatus(input.replacement, nowDate) !== "ACTIVE") {
+    throw new Error("Conformance replacement credential must be active.");
+  }
+
+  await input.store.create(input.active);
+  assertCredentialEquivalent(await input.store.findById(input.active.id), input.active, "create");
+
+  const replacement = await input.store.replaceActive({
+    previousCredentialId: input.active.id,
+    replacement: input.replacement,
+    revokedAt: now,
+  });
+  if (!replacement.applied) {
+    throw new Error(`Conformance replacement failed: ${replacement.reason}`);
+  }
+  assertCredentialEquivalent(await input.store.findById(input.replacement.id), input.replacement, "replacement");
+
+  const prior = await input.store.findById(input.active.id);
+  if (prior && !prior.revokedAt) {
+    throw new Error("Conformance replacement left the prior credential active.");
+  }
+
+  const revocation = await input.store.revokeActive({ credentialId: input.replacement.id, revokedAt: now });
+  if (!revocation.applied) {
+    throw new Error(`Conformance revocation failed: ${revocation.reason}`);
+  }
+  const revoked = await input.store.findById(input.replacement.id);
+  if (!revoked?.revokedAt) {
+    throw new Error("Conformance revocation did not persist a revoked credential.");
+  }
+  await input.store.touchLastUsed(input.replacement.id, now);
+
+  return Object.freeze({
+    priorCredentialRetained: Boolean(prior),
+    replacementCredentialId: input.replacement.id,
+  });
 }
 
 /** A deterministic hash suitable for host-owned credential lookup and storage. */
@@ -203,19 +377,51 @@ export async function authenticateApiAccessCredential(
 ): Promise<ApiAccessAuthentication> {
   const parsed = parseApiAccessSecret(input.rawCredential, input.prefix);
   if (!parsed) return { ok: false, reason: "MALFORMED" };
+  let peppers: DefinedApiAccessPepperRing;
+  try {
+    peppers = defineApiAccessPepperRing(input.peppers);
+  } catch {
+    return { ok: false, reason: "INVALID_PEPPER_RING" };
+  }
   const credential = await input.store.findById(parsed.id);
   if (!credential) return { ok: false, reason: "NOT_FOUND" };
   if (credential.formatVersion !== 1) return { ok: false, reason: "MALFORMED" };
-  const pepper = input.peppers.find((candidate) => candidate.version === credential.pepperVersion);
+  const pepper = peppers.find(credential.pepperVersion);
   if (!pepper) return { ok: false, reason: "UNKNOWN_PEPPER_VERSION" };
   if (!verifyApiAccessSecret(parsed.secret, credential.secretHash, pepper.value)) {
     return { ok: false, reason: "HASH_MISMATCH" };
   }
-  if (credential.revokedAt) return { ok: false, reason: "REVOKED" };
-  if (credential.expiresAt && new Date(credential.expiresAt).getTime() <= (input.now ?? new Date()).getTime()) {
-    return { ok: false, reason: "EXPIRED" };
+  switch (getApiAccessCredentialStatus(credential, input.now)) {
+    case "REVOKED":
+      return { ok: false, reason: "REVOKED" };
+    case "EXPIRED":
+      return { ok: false, reason: "EXPIRED" };
+    case "INVALID":
+      return { ok: false, reason: "MALFORMED" };
   }
   return { ok: true, credential };
+}
+
+/** Evaluate persisted credential lifecycle state without applying a scope. */
+export function getApiAccessCredentialStatus(
+  credential: Pick<ApiAccessCredential, "revokedAt" | "expiresAt">,
+  now: Date = new Date(),
+): ApiAccessCredentialStatus {
+  if (credential.revokedAt) return "REVOKED";
+  if (!credential.expiresAt) return "ACTIVE";
+  const expiresAt = new Date(credential.expiresAt).getTime();
+  if (Number.isNaN(expiresAt)) return "INVALID";
+  return expiresAt <= now.getTime() ? "EXPIRED" : "ACTIVE";
+}
+
+/** Return a safe human-readable representation using only public metadata. */
+export function formatApiAccessCredentialMask(prefix: string, credentialId: string): string {
+  requireText(prefix, "Credential prefix");
+  requireText(credentialId, "Credential id");
+  if (!/^[a-z][a-z0-9_-]*$/i.test(prefix) || !/^[A-Za-z0-9_-]+$/.test(credentialId)) {
+    throw new Error("Credential prefix or id is malformed.");
+  }
+  return `${prefix}${credentialId}.…`;
 }
 
 /**
@@ -227,8 +433,9 @@ export function authorizeApiAccess(
   credential: ApiAccessCredential,
   request: ApiAccessRequest,
 ): ApiAccessDecision {
-  if (credential.revokedAt) return { allowed: false, reason: "REVOKED" };
-  if (credential.expiresAt && new Date(credential.expiresAt).getTime() <= (request.now ?? new Date()).getTime()) {
+  const status = getApiAccessCredentialStatus(credential, request.now);
+  if (status === "REVOKED") return { allowed: false, reason: "REVOKED" };
+  if (status === "EXPIRED" || status === "INVALID") {
     return { allowed: false, reason: "EXPIRED" };
   }
   if (credential.workspaceId && credential.workspaceId !== request.workspaceId) {
@@ -251,6 +458,33 @@ function normalizeScopes(scopes: readonly ApiAccessScope[]): readonly ApiAccessS
   if (values.length === 0) throw new Error("At least one API scope is required.");
   for (const scope of values) requireText(scope, "API scope");
   return Object.freeze(values);
+}
+
+function assertCredentialEquivalent(
+  actual: ApiAccessCredential | null,
+  expected: ApiAccessCredential,
+  action: string,
+): void {
+  if (!actual) throw new Error(`Conformance ${action} did not persist the credential.`);
+  const fields: (keyof ApiAccessCredential)[] = [
+    "id",
+    "ownerId",
+    "formatVersion",
+    "hashVersion",
+    "pepperVersion",
+    "secretHash",
+    "createdAt",
+    "workspaceId",
+    "expiresAt",
+  ];
+  for (const field of fields) {
+    if (actual[field] !== expected[field]) {
+      throw new Error(`Conformance ${action} changed credential ${field}.`);
+    }
+  }
+  if (actual.scopes.length !== expected.scopes.length || actual.scopes.some((scope, index) => scope !== expected.scopes[index])) {
+    throw new Error(`Conformance ${action} changed credential scopes.`);
+  }
 }
 
 function requireText(value: string, label: string): void {

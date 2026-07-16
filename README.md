@@ -10,7 +10,7 @@ request middleware, user session, or product resource authorization.
 This package is distributed through immutable GitHub tags:
 
 ```bash
-npm install github:andrewpopov/api-access-kit#v0.4.0
+npm install github:andrewpopov/api-access-kit#v0.5.0
 ```
 
 ## Security boundary
@@ -72,6 +72,44 @@ For HTTP, call `authenticateApiAccessCredential` from the host's raw-credential
 adapter, then let the HTTP kit map the successful record to its request context.
 Do not make an HTTP middleware hash the whole credential before lookup: that
 breaks public-id lookup and secret-only verification.
+
+## Lifecycle adapters
+
+Use `defineApiAccessPepperRing` to validate a named key ring before passing its
+values into issuance or authentication. Empty, blank, and duplicate versions
+are rejected. The host still owns environment-variable parsing and secret
+providers.
+
+`issueReplacementApiAccessCredential` creates fresh material for an active
+credential while preserving its owner, exact scopes, workspace binding, and
+expiry. It does not write a database record or revoke the prior credential.
+The host applies both sides atomically through `ApiAccessCredentialLifecycleStore`:
+
+```ts
+const replacement = issueReplacementApiAccessCredential({
+  credential: current,
+  id: crypto.randomUUID(),
+  prefix: "miz_",
+  pepper: pepperRing.primary,
+});
+
+const result = await credentialStore.replaceActive({
+  previousCredentialId: current.id,
+  replacement: replacement.credential,
+  revokedAt: new Date().toISOString(),
+});
+if (!result.applied) throw new Error(`Credential replacement failed: ${result.reason}`);
+return replacement.secret; // reveal once
+```
+
+The store interface is deliberately small. It does not dictate whether an app
+creates a replacement row, changes a credential inside an existing row, adds an
+audit record, or uses an ORM transaction. Those are host responsibilities.
+
+Use `runApiAccessCredentialLifecycleConformance` only with a disposable store
+fixture. It verifies that create, replacement, prior-credential invalidation,
+revocation, and last-used touch honor the portable contract before a host
+adopts the package.
 
 ## Scope model
 

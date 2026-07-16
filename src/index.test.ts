@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   authorizeApiAccess,
   authenticateApiAccessCredential,
+  defineApiAccessPepperRing,
   defineApiScopes,
+  formatApiAccessCredentialMask,
+  getApiAccessCredentialStatus,
   hashApiAccessSecret,
   issueApiAccessCredential,
+  issueReplacementApiAccessCredential,
   parseApiAccessSecret,
   toApiAccessCredentialMetadata,
+  runApiAccessCredentialLifecycleConformance,
   verifyApiAccessSecret,
 } from "./index.js";
 import {
@@ -60,7 +65,87 @@ describe("api-access-kit", () => {
     const store = { findById: async (id: string) => id === issued.credential.id ? issued.credential : null };
     await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [{ version: "old", value: "old-pepper" }, pepper] })).resolves.toMatchObject({ ok: true, credential: { id: "credential-1" } });
     await expect(authenticateApiAccessCredential({ rawCredential: `${issued.secret}x`, prefix: "miz_", store, peppers: [pepper] })).resolves.toEqual({ ok: false, reason: "HASH_MISMATCH" });
-    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [] })).resolves.toEqual({ ok: false, reason: "UNKNOWN_PEPPER_VERSION" });
+    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [] })).resolves.toEqual({ ok: false, reason: "INVALID_PEPPER_RING" });
+  });
+
+  it("validates pepper rings and fails closed when authentication receives an invalid ring", async () => {
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] });
+    const store = { findById: async () => issued.credential };
+    const ring = defineApiAccessPepperRing([{ version: "old", value: "old-pepper" }, pepper]);
+    expect(ring.primary).toEqual({ version: "old", value: "old-pepper" });
+    expect(ring.find("2026-01")).toEqual(pepper);
+    expect(() => defineApiAccessPepperRing([])).toThrow("At least one API credential pepper");
+    expect(() => defineApiAccessPepperRing([pepper, pepper])).toThrow("Duplicate credential pepper version");
+    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper, pepper] })).resolves.toEqual({ ok: false, reason: "INVALID_PEPPER_RING" });
+  });
+
+  it("issues replacement material for active credentials without widening portable fields", () => {
+    const original = issueApiAccessCredential({
+      id: "credential-1",
+      ownerId: "user-1",
+      prefix: "miz_",
+      pepper,
+      scopes: ["mizen.items.read"],
+      workspaceId: "workspace-1",
+      expiresAt: "2026-12-01T00:00:00.000Z",
+    }).credential;
+    const replacement = issueReplacementApiAccessCredential({
+      credential: original,
+      id: "credential-2",
+      prefix: "miz_",
+      pepper: { version: "2026-02", value: "replacement-pepper" },
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    expect(replacement.secret).toMatch(/^miz_credential-2\./);
+    expect(replacement.credential).toMatchObject({
+      id: "credential-2",
+      ownerId: "user-1",
+      scopes: ["mizen.items.read"],
+      workspaceId: "workspace-1",
+      expiresAt: "2026-12-01T00:00:00.000Z",
+      pepperVersion: "2026-02",
+    });
+    expect(() => issueReplacementApiAccessCredential({ credential: { ...original, revokedAt: "2026-01-01T00:00:00.000Z" }, id: "credential-3", prefix: "miz_", pepper })).toThrow("Only an active API credential");
+  });
+
+  it("reports credential status and produces a secret-safe canonical mask", () => {
+    expect(getApiAccessCredentialStatus({})).toBe("ACTIVE");
+    expect(getApiAccessCredentialStatus({ revokedAt: "2026-01-01T00:00:00.000Z" })).toBe("REVOKED");
+    expect(getApiAccessCredentialStatus({ expiresAt: "2026-01-01T00:00:00.000Z" }, new Date("2026-01-02T00:00:00.000Z"))).toBe("EXPIRED");
+    expect(getApiAccessCredentialStatus({ expiresAt: "not-a-date" })).toBe("INVALID");
+    expect(formatApiAccessCredentialMask("miz_", "credential-1")).toBe("miz_credential-1.…");
+    expect(() => formatApiAccessCredentialMask("miz_", "bad.id")).toThrow("Credential prefix or id is malformed");
+  });
+
+  it("proves a host lifecycle adapter replaces, revokes, and touches credentials", async () => {
+    const records = new Map<string, ReturnType<typeof issueApiAccessCredential>["credential"]>();
+    const store = {
+      async findById(id: string) {
+        return records.get(id) ?? null;
+      },
+      async create(credential: ReturnType<typeof issueApiAccessCredential>["credential"]) {
+        records.set(credential.id, credential);
+      },
+      async replaceActive(input: { previousCredentialId: string; replacement: ReturnType<typeof issueApiAccessCredential>["credential"]; revokedAt: string }) {
+        const previous = records.get(input.previousCredentialId);
+        if (!previous || previous.revokedAt) return { applied: false as const, reason: "NOT_ACTIVE" as const };
+        records.set(previous.id, { ...previous, revokedAt: input.revokedAt });
+        records.set(input.replacement.id, input.replacement);
+        return { applied: true as const };
+      },
+      async revokeActive(input: { credentialId: string; revokedAt: string }) {
+        const credential = records.get(input.credentialId);
+        if (!credential || credential.revokedAt) return { applied: false as const, reason: "NOT_ACTIVE" as const };
+        records.set(credential.id, { ...credential, revokedAt: input.revokedAt });
+        return { applied: true as const };
+      },
+      async touchLastUsed() {},
+    };
+    const active = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] }).credential;
+    const replacement = issueApiAccessCredential({ id: "credential-2", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] }).credential;
+    await expect(runApiAccessCredentialLifecycleConformance({ store, active, replacement, now: "2026-01-01T00:00:00.000Z" })).resolves.toEqual({ priorCredentialRetained: true, replacementCredentialId: "credential-2" });
+    expect(records.get("credential-1")?.revokedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(records.get("credential-2")?.revokedAt).toBe("2026-01-01T00:00:00.000Z");
   });
 
   it("validates a versioned command envelope and preserves its idempotency receipt", () => {

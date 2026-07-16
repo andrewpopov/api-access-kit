@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Add validated named pepper rings, canonical lifecycle status, and safe masked
+  credential metadata helpers.
+- Add active-only replacement issuance and persistence-agnostic lifecycle store
+  contracts for create, replacement, revocation, and last-used tracking.
+- Fail closed when authentication receives an empty, malformed, or duplicate
+  pepper ring.
+
 ## 0.4.0
 
 - Define the canonical v1 credential format, indexed public-id lookup, and
