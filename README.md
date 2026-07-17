@@ -1,6 +1,6 @@
 # @andrewpopov/api-access-kit
 
-Pure primitives for opaque, user-owned API credentials. It issues a secret once,
+Pure primitives for opaque, lifecycle-owned API credentials. It issues a secret once,
 hashes it for host storage, evaluates exact named scopes and lifecycle state, and
 keeps workspace binding explicit. It does not own a database, HTTP framework,
 request middleware, user session, or product resource authorization.
@@ -20,10 +20,11 @@ API access is evaluated in this order:
 1. Parse the versioned opaque credential's public id and load the host-owned credential record by index.
 2. Select the stored record's pepper version and constant-time verify only the random secret segment.
 3. Call `authorizeApiAccess` for exact scope and workspace binding.
-4. Authorize the credential **owner** against the host's resource policy.
+4. Authorize the credential's explicitly bound **principal** against the host's resource policy.
 
 Step 4 is mandatory. A scope permits an API operation category; it never grants
-access to a product resource by itself.
+access to a product resource by itself. `ownerId` is the accountable issuer and
+lifecycle owner; it is not automatically the resource authorization principal.
 
 ```ts
 const mizenScopes = defineApiScopes([
@@ -37,7 +38,12 @@ const decision = authorizeApiAccess(credential, {
 });
 if (!decision.allowed) throw new ForbiddenError(decision.reason);
 
-await authorization.requireSpace("item.edit", workspaceId, credential.ownerId, spaceId, itemId);
+const principal = createApiAccessPrincipalBinding({
+  credential,
+  principalType: "organization",
+  principalId: organization.id,
+});
+await authorization.requireSpace("item.edit", workspaceId, principal.principalId, spaceId, itemId);
 ```
 
 For Mizen, a document-content write must then use the same Y.Doc-authoritative
@@ -45,6 +51,37 @@ command path as collaboration. Do not replace a JSON, HTML, or search projection
 through a REST endpoint.
 
 ## Issuing a credential
+
+### Organization and service principals
+
+Do not create a synthetic bot user for every API key just to route a key through
+user-membership authorization. Persist a host-owned
+`ApiAccessPrincipalBinding` for each credential and evaluate it directly in
+the product's organization and resource policy. The binding records a
+credential's authorization principal separately from the accountable issuer:
+
+```ts
+const binding = createApiAccessPrincipalBinding({
+  credential: issued.credential,
+  principalType: "organization",
+  principalId: organization.id,
+});
+await credentialStore.insert(issued.credential);
+await principalBindingStore.insert({
+  ...binding,
+  projectScopes: [project.id], // host-defined, immutable resource scope
+  projectRole: "MEMBER",      // host-defined role, never inferred from issuer
+});
+```
+
+At request time, authenticate the credential first, then load the binding and
+enforce in order: credential lifecycle → exact operation scope → organization
+binding → resource scope → role. The issuer may manage lifecycle actions but
+must not silently grant every permission that the issuer personally has. Never
+issue `OWNER` to a non-human credential unless the host has an explicit,
+reviewed need; prefer named resources and the lowest role. Retire legacy
+synthetic users only after preserving any audit/agent history that references
+them.
 
 ```ts
 const issued = issueApiAccessCredential({

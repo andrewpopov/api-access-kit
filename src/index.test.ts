@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   authorizeApiAccess,
   authenticateApiAccessCredential,
+  createApiAccessPrincipalBinding,
   defineApiAccessPepperRing,
   defineApiScopes,
   formatApiAccessCredentialMask,
@@ -25,6 +26,31 @@ import {
 const pepper = { version: "2026-01", value: "test-pepper" };
 
 describe("api-access-kit", () => {
+  it("separates an accountable credential owner from its resource authorization principal", () => {
+    const credential = issueApiAccessCredential({
+      id: "credential-organization",
+      ownerId: "user-issuer",
+      prefix: "miz_",
+      pepper,
+      scopes: ["mizen.items.read"],
+    }).credential;
+
+    const binding = createApiAccessPrincipalBinding({
+      credential,
+      principalType: "organization",
+      principalId: "org-1",
+    });
+
+    expect(binding).toEqual({
+      credentialId: "credential-organization",
+      issuerId: "user-issuer",
+      principalType: "organization",
+      principalId: "org-1",
+    });
+    expect(Object.isFrozen(binding)).toBe(true);
+    expect(() => createApiAccessPrincipalBinding({ credential, principalType: "", principalId: "org-1" })).toThrow("principal type");
+  });
+
   it("issues a one-time opaque secret while retaining only a hash", () => {
     const issued = issueApiAccessCredential({
       id: "credential-1",
