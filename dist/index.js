@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.evaluateApiCommandPrecondition = exports.evaluateApiCommandIdempotency = exports.defineApiCommands = exports.createApiCommandReceipt = exports.createApiCommandFingerprint = void 0;
+exports.SUPPORTED_API_ACCESS_HASH_VERSION = exports.evaluateApiCommandPrecondition = exports.evaluateApiCommandIdempotency = exports.defineApiCommands = exports.createApiCommandReceipt = exports.createApiCommandFingerprint = void 0;
 exports.createApiAccessPrincipalBinding = createApiAccessPrincipalBinding;
 exports.defineApiScopes = defineApiScopes;
 exports.defineApiAccessPepperRing = defineApiAccessPepperRing;
@@ -22,6 +22,8 @@ Object.defineProperty(exports, "createApiCommandReceipt", { enumerable: true, ge
 Object.defineProperty(exports, "defineApiCommands", { enumerable: true, get: function () { return commands_js_1.defineApiCommands; } });
 Object.defineProperty(exports, "evaluateApiCommandIdempotency", { enumerable: true, get: function () { return commands_js_1.evaluateApiCommandIdempotency; } });
 Object.defineProperty(exports, "evaluateApiCommandPrecondition", { enumerable: true, get: function () { return commands_js_1.evaluateApiCommandPrecondition; } });
+/** The only `hashVersion` this package knows how to verify. */
+exports.SUPPORTED_API_ACCESS_HASH_VERSION = "sha256-peppered-secret-v1";
 /**
  * Creates a validated, immutable authorization binding for host storage or
  * request context. Hosts should bind an organization credential directly to
@@ -99,6 +101,9 @@ function issueApiAccessCredential(input) {
     if (!/^[a-z][a-z0-9_-]*$/i.test(input.prefix)) {
         throw new Error("Credential prefix must contain only letters, numbers, underscores, or dashes.");
     }
+    if (input.hashVersion !== undefined && input.hashVersion !== exports.SUPPORTED_API_ACCESS_HASH_VERSION) {
+        throw new Error(`Unsupported hash version "${input.hashVersion}"; this package can only verify "${exports.SUPPORTED_API_ACCESS_HASH_VERSION}".`);
+    }
     const scopes = normalizeScopes(input.scopes);
     const secretBytes = input.secretBytes ?? 32;
     if (!Number.isInteger(secretBytes) || secretBytes < 16) {
@@ -109,7 +114,7 @@ function issueApiAccessCredential(input) {
         id: input.id,
         ownerId: input.ownerId,
         formatVersion: 1,
-        hashVersion: input.hashVersion ?? "sha256-peppered-secret-v1",
+        hashVersion: input.hashVersion ?? exports.SUPPORTED_API_ACCESS_HASH_VERSION,
         pepperVersion: input.pepper.version,
         secretHash: hashApiAccessSecret(parseApiAccessSecret(secret, input.prefix).secret, input.pepper.value),
         scopes,
@@ -238,6 +243,9 @@ async function authenticateApiAccessCredential(input) {
         return { ok: false, reason: "NOT_FOUND" };
     if (credential.formatVersion !== 1)
         return { ok: false, reason: "MALFORMED" };
+    if (credential.hashVersion !== exports.SUPPORTED_API_ACCESS_HASH_VERSION) {
+        return { ok: false, reason: "UNSUPPORTED_HASH_VERSION" };
+    }
     const pepper = peppers.find(credential.pepperVersion);
     if (!pepper)
         return { ok: false, reason: "UNKNOWN_PEPPER_VERSION" };

@@ -105,6 +105,22 @@ describe("api-access-kit", () => {
     await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper, pepper] })).resolves.toEqual({ ok: false, reason: "INVALID_PEPPER_RING" });
   });
 
+  it("rejects authentication for a credential stamped with an unsupported hashVersion", async () => {
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] });
+    expect(issued.credential.hashVersion).toBe("sha256-peppered-secret-v1");
+    const store = { findById: async () => ({ ...issued.credential, hashVersion: "argon2id-v2" }) };
+    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper] })).resolves.toEqual({ ok: false, reason: "UNSUPPORTED_HASH_VERSION" });
+
+    const supportedStore = { findById: async () => issued.credential };
+    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store: supportedStore, peppers: [pepper] })).resolves.toMatchObject({ ok: true, credential: { id: "credential-1" } });
+  });
+
+  it("rejects issuance with an unsupported hashVersion", () => {
+    expect(() =>
+      issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"], hashVersion: "argon2id-v2" }),
+    ).toThrow('Unsupported hash version "argon2id-v2"');
+  });
+
   it("issues replacement material for active credentials without widening portable fields", () => {
     const original = issueApiAccessCredential({
       id: "credential-1",

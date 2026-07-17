@@ -19,6 +19,9 @@ export {
 
 export type ApiAccessScope = string;
 
+/** The only `hashVersion` this package knows how to verify. */
+export const SUPPORTED_API_ACCESS_HASH_VERSION = "sha256-peppered-secret-v1";
+
 /** Storage-safe credential state. The secret itself never appears in this shape. */
 export interface ApiAccessCredential {
   id: string;
@@ -172,7 +175,8 @@ export type ApiAccessAuthenticationFailure =
   | "HASH_MISMATCH"
   | "REVOKED"
   | "EXPIRED"
-  | "UNKNOWN_PEPPER_VERSION";
+  | "UNKNOWN_PEPPER_VERSION"
+  | "UNSUPPORTED_HASH_VERSION";
 
 export type ApiAccessAuthentication =
   | { ok: true; credential: ApiAccessCredential }
@@ -275,6 +279,11 @@ export function issueApiAccessCredential(
   if (!/^[a-z][a-z0-9_-]*$/i.test(input.prefix)) {
     throw new Error("Credential prefix must contain only letters, numbers, underscores, or dashes.");
   }
+  if (input.hashVersion !== undefined && input.hashVersion !== SUPPORTED_API_ACCESS_HASH_VERSION) {
+    throw new Error(
+      `Unsupported hash version "${input.hashVersion}"; this package can only verify "${SUPPORTED_API_ACCESS_HASH_VERSION}".`,
+    );
+  }
   const scopes = normalizeScopes(input.scopes);
   const secretBytes = input.secretBytes ?? 32;
   if (!Number.isInteger(secretBytes) || secretBytes < 16) {
@@ -285,7 +294,7 @@ export function issueApiAccessCredential(
     id: input.id,
     ownerId: input.ownerId,
     formatVersion: 1,
-    hashVersion: input.hashVersion ?? "sha256-peppered-secret-v1",
+    hashVersion: input.hashVersion ?? SUPPORTED_API_ACCESS_HASH_VERSION,
     pepperVersion: input.pepper.version,
     secretHash: hashApiAccessSecret(parseApiAccessSecret(secret, input.prefix)!.secret, input.pepper.value),
     scopes,
@@ -427,6 +436,9 @@ export async function authenticateApiAccessCredential(
   const credential = await input.store.findById(parsed.id);
   if (!credential) return { ok: false, reason: "NOT_FOUND" };
   if (credential.formatVersion !== 1) return { ok: false, reason: "MALFORMED" };
+  if (credential.hashVersion !== SUPPORTED_API_ACCESS_HASH_VERSION) {
+    return { ok: false, reason: "UNSUPPORTED_HASH_VERSION" };
+  }
   const pepper = peppers.find(credential.pepperVersion);
   if (!pepper) return { ok: false, reason: "UNKNOWN_PEPPER_VERSION" };
   if (!verifyApiAccessSecret(parsed.secret, credential.secretHash, pepper.value)) {

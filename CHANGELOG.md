@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- Fail closed with a new `UNSUPPORTED_HASH_VERSION` authentication reason when
+  a stored credential's `hashVersion` does not match the package's supported
+  hash algorithm, checked before any secret hashing or comparison work; reject
+  unsupported hash versions at issuance so such credentials cannot be minted.
+- Add host-owned `ApiAccessPrincipalBinding`/`createApiAccessPrincipalBinding`
+  to separate a credential's accountable owner from the resource-authorization
+  principal its requests should be evaluated against.
+
 ## 0.5.0
 
 - Add validated named pepper rings, canonical lifecycle status, and safe masked

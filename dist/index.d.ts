@@ -1,5 +1,7 @@
 export { createApiCommandFingerprint, createApiCommandReceipt, defineApiCommands, evaluateApiCommandIdempotency, evaluateApiCommandPrecondition, type ApiCommandEnvelope, type ApiCommandIdempotency, type ApiCommandIdempotencyRecord, type ApiCommandPrecondition, type ApiCommandReceipt, type ApiCommandResource, type DefinedApiCommands, type JsonObject, type JsonValue, } from "./commands.js";
 export type ApiAccessScope = string;
+/** The only `hashVersion` this package knows how to verify. */
+export declare const SUPPORTED_API_ACCESS_HASH_VERSION = "sha256-peppered-secret-v1";
 /** Storage-safe credential state. The secret itself never appears in this shape. */
 export interface ApiAccessCredential {
     id: string;
@@ -121,7 +123,7 @@ export interface ApiAccessCredentialLifecycleConformanceResult {
     readonly priorCredentialRetained: boolean;
     readonly replacementCredentialId: string;
 }
-export type ApiAccessAuthenticationFailure = "MALFORMED" | "INVALID_PEPPER_RING" | "NOT_FOUND" | "HASH_MISMATCH" | "REVOKED" | "EXPIRED" | "UNKNOWN_PEPPER_VERSION";
+export type ApiAccessAuthenticationFailure = "MALFORMED" | "INVALID_PEPPER_RING" | "NOT_FOUND" | "HASH_MISMATCH" | "REVOKED" | "EXPIRED" | "UNKNOWN_PEPPER_VERSION" | "UNSUPPORTED_HASH_VERSION";
 export type ApiAccessAuthentication = {
     ok: true;
     credential: ApiAccessCredential;
