@@ -3,6 +3,7 @@ export type ApiAccessScope = string;
 /** Storage-safe credential state. The secret itself never appears in this shape. */
 export interface ApiAccessCredential {
     id: string;
+    /** Accountable issuer/lifecycle owner. This is not necessarily the runtime authorization principal. */
     ownerId: string;
     /** Public wire-format version. Persisted so format migrations are explicit. */
     formatVersion: 1;
@@ -17,6 +18,33 @@ export interface ApiAccessCredential {
     expiresAt?: string;
     revokedAt?: string;
 }
+/**
+ * Host-owned resource-authorization identity for an API credential.
+ *
+ * The credential package intentionally does not persist this binding or decide
+ * what a role can do. It makes the crucial separation explicit: `ownerId`
+ * answers who issued/manages a credential; `principalId` answers which user,
+ * organization, or service authorization policy applies to its requests.
+ */
+export interface ApiAccessPrincipalBinding {
+    readonly credentialId: string;
+    readonly principalType: string;
+    readonly principalId: string;
+    readonly issuerId: string;
+}
+export interface CreateApiAccessPrincipalBindingInput {
+    credential: Pick<ApiAccessCredential, "id" | "ownerId">;
+    principalType: string;
+    principalId: string;
+    issuerId?: string;
+}
+/**
+ * Creates a validated, immutable authorization binding for host storage or
+ * request context. Hosts should bind an organization credential directly to
+ * its organization/service principal instead of minting a synthetic user per
+ * credential merely to reuse membership checks.
+ */
+export declare function createApiAccessPrincipalBinding(input: CreateApiAccessPrincipalBindingInput): ApiAccessPrincipalBinding;
 /** The only response shape which may carry a raw credential secret. */
 export interface IssuedApiAccessCredential {
     credential: ApiAccessCredential;

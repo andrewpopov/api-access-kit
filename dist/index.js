@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.evaluateApiCommandPrecondition = exports.evaluateApiCommandIdempotency = exports.defineApiCommands = exports.createApiCommandReceipt = exports.createApiCommandFingerprint = void 0;
+exports.createApiAccessPrincipalBinding = createApiAccessPrincipalBinding;
 exports.defineApiScopes = defineApiScopes;
 exports.defineApiAccessPepperRing = defineApiAccessPepperRing;
 exports.issueApiAccessCredential = issueApiAccessCredential;
@@ -21,6 +22,23 @@ Object.defineProperty(exports, "createApiCommandReceipt", { enumerable: true, ge
 Object.defineProperty(exports, "defineApiCommands", { enumerable: true, get: function () { return commands_js_1.defineApiCommands; } });
 Object.defineProperty(exports, "evaluateApiCommandIdempotency", { enumerable: true, get: function () { return commands_js_1.evaluateApiCommandIdempotency; } });
 Object.defineProperty(exports, "evaluateApiCommandPrecondition", { enumerable: true, get: function () { return commands_js_1.evaluateApiCommandPrecondition; } });
+/**
+ * Creates a validated, immutable authorization binding for host storage or
+ * request context. Hosts should bind an organization credential directly to
+ * its organization/service principal instead of minting a synthetic user per
+ * credential merely to reuse membership checks.
+ */
+function createApiAccessPrincipalBinding(input) {
+    requireText(input.credential.id, "API credential id");
+    requireText(input.issuerId ?? input.credential.ownerId, "API credential issuer id");
+    requireText(input.principalType, "API credential principal type");
+    requireText(input.principalId, "API credential principal id");
+    const credentialId = input.credential.id;
+    const issuerId = input.issuerId ?? input.credential.ownerId;
+    const principalType = input.principalType;
+    const principalId = input.principalId;
+    return Object.freeze({ credentialId, issuerId, principalType, principalId });
+}
 /** Define the finite, application-owned scope vocabulary. Matching is exact. */
 function defineApiScopes(scopes) {
     const values = [...new Set(scopes)];
