@@ -1,7 +1,15 @@
 export { createApiCommandFingerprint, createApiCommandReceipt, defineApiCommands, evaluateApiCommandIdempotency, evaluateApiCommandPrecondition, type ApiCommandEnvelope, type ApiCommandIdempotency, type ApiCommandIdempotencyRecord, type ApiCommandPrecondition, type ApiCommandReceipt, type ApiCommandResource, type DefinedApiCommands, type JsonObject, type JsonValue, } from "./commands.js";
 export type ApiAccessScope = string;
-/** The only `hashVersion` this package knows how to verify. */
-export declare const SUPPORTED_API_ACCESS_HASH_VERSION = "sha256-peppered-secret-v1";
+/** Legacy: SHA-256 over the pepper and secret joined by a NUL byte. Still verified for existing credentials. */
+export declare const API_ACCESS_HASH_VERSION_V1 = "sha256-peppered-secret-v1";
+/** HMAC-SHA256 keyed by the pepper over the secret. The current default. */
+export declare const API_ACCESS_HASH_VERSION_V2 = "hmac-sha256-peppered-secret-v2";
+/** Every hash version this package can verify. */
+export declare const SUPPORTED_API_ACCESS_HASH_VERSIONS: readonly ["sha256-peppered-secret-v1", "hmac-sha256-peppered-secret-v2"];
+/** The hash version new credentials are issued with. */
+export declare const DEFAULT_API_ACCESS_HASH_VERSION = "hmac-sha256-peppered-secret-v2";
+export type ApiAccessHashVersion = (typeof SUPPORTED_API_ACCESS_HASH_VERSIONS)[number];
+export declare function isSupportedHashVersion(value: string): value is ApiAccessHashVersion;
 /** Storage-safe credential state. The secret itself never appears in this shape. */
 export interface ApiAccessCredential {
     id: string;
@@ -70,7 +78,7 @@ export interface IssueApiAccessCredentialInput {
     scopes: readonly ApiAccessScope[];
     prefix: string;
     pepper: ApiAccessPepper;
-    hashVersion?: string;
+    hashVersion?: ApiAccessHashVersion;
     createdAt?: string;
     workspaceId?: string;
     expiresAt?: string;
@@ -149,7 +157,7 @@ export interface IssueReplacementApiAccessCredentialInput {
     id: string;
     prefix: string;
     pepper: ApiAccessPepper;
-    hashVersion?: string;
+    hashVersion?: ApiAccessHashVersion;
     createdAt?: string;
     now?: Date;
     secretBytes?: number;
@@ -186,9 +194,9 @@ export declare function issueReplacementApiAccessCredential(input: IssueReplacem
  */
 export declare function runApiAccessCredentialLifecycleConformance(input: ApiAccessCredentialLifecycleConformanceInput): Promise<ApiAccessCredentialLifecycleConformanceResult>;
 /** A deterministic hash suitable for host-owned credential lookup and storage. */
-export declare function hashApiAccessSecret(secret: string, pepper: string): string;
+export declare function hashApiAccessSecret(secret: string, pepper: string, hashVersion?: ApiAccessHashVersion): string;
 /** Constant-time comparison for a host's stored credential hash. */
-export declare function verifyApiAccessSecret(secret: string, storedHash: string, pepper: string): boolean;
+export declare function verifyApiAccessSecret(secret: string, storedHash: string, pepper: string, hashVersion: ApiAccessHashVersion): boolean;
 /** Parse the public credential id from an opaque secret for indexed lookup. */
 export declare function parseApiAccessSecret(secret: string, prefix: string): {
     id: string;

@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SUPPORTED_API_ACCESS_HASH_VERSION = exports.evaluateApiCommandPrecondition = exports.evaluateApiCommandIdempotency = exports.defineApiCommands = exports.createApiCommandReceipt = exports.createApiCommandFingerprint = void 0;
+exports.DEFAULT_API_ACCESS_HASH_VERSION = exports.SUPPORTED_API_ACCESS_HASH_VERSIONS = exports.API_ACCESS_HASH_VERSION_V2 = exports.API_ACCESS_HASH_VERSION_V1 = exports.evaluateApiCommandPrecondition = exports.evaluateApiCommandIdempotency = exports.defineApiCommands = exports.createApiCommandReceipt = exports.createApiCommandFingerprint = void 0;
+exports.isSupportedHashVersion = isSupportedHashVersion;
 exports.createApiAccessPrincipalBinding = createApiAccessPrincipalBinding;
 exports.defineApiScopes = defineApiScopes;
 exports.defineApiAccessPepperRing = defineApiAccessPepperRing;
@@ -22,8 +23,20 @@ Object.defineProperty(exports, "createApiCommandReceipt", { enumerable: true, ge
 Object.defineProperty(exports, "defineApiCommands", { enumerable: true, get: function () { return commands_js_1.defineApiCommands; } });
 Object.defineProperty(exports, "evaluateApiCommandIdempotency", { enumerable: true, get: function () { return commands_js_1.evaluateApiCommandIdempotency; } });
 Object.defineProperty(exports, "evaluateApiCommandPrecondition", { enumerable: true, get: function () { return commands_js_1.evaluateApiCommandPrecondition; } });
-/** The only `hashVersion` this package knows how to verify. */
-exports.SUPPORTED_API_ACCESS_HASH_VERSION = "sha256-peppered-secret-v1";
+/** Legacy: SHA-256 over the pepper and secret joined by a NUL byte. Still verified for existing credentials. */
+exports.API_ACCESS_HASH_VERSION_V1 = "sha256-peppered-secret-v1";
+/** HMAC-SHA256 keyed by the pepper over the secret. The current default. */
+exports.API_ACCESS_HASH_VERSION_V2 = "hmac-sha256-peppered-secret-v2";
+/** Every hash version this package can verify. */
+exports.SUPPORTED_API_ACCESS_HASH_VERSIONS = Object.freeze([
+    exports.API_ACCESS_HASH_VERSION_V1,
+    exports.API_ACCESS_HASH_VERSION_V2,
+]);
+/** The hash version new credentials are issued with. */
+exports.DEFAULT_API_ACCESS_HASH_VERSION = exports.API_ACCESS_HASH_VERSION_V2;
+function isSupportedHashVersion(value) {
+    return exports.SUPPORTED_API_ACCESS_HASH_VERSIONS.includes(value);
+}
 /**
  * Creates a validated, immutable authorization binding for host storage or
  * request context. Hosts should bind an organization credential directly to
@@ -101,22 +114,24 @@ function issueApiAccessCredential(input) {
     if (!/^[a-z][a-z0-9_-]*$/i.test(input.prefix)) {
         throw new Error("Credential prefix must contain only letters, numbers, underscores, or dashes.");
     }
-    if (input.hashVersion !== undefined && input.hashVersion !== exports.SUPPORTED_API_ACCESS_HASH_VERSION) {
-        throw new Error(`Unsupported hash version "${input.hashVersion}"; this package can only verify "${exports.SUPPORTED_API_ACCESS_HASH_VERSION}".`);
+    if (input.hashVersion !== undefined && !isSupportedHashVersion(input.hashVersion)) {
+        throw new Error(`Unsupported hash version "${input.hashVersion}"; supported: ${exports.SUPPORTED_API_ACCESS_HASH_VERSIONS.join(", ")}.`);
     }
+    const hashVersion = input.hashVersion ?? exports.DEFAULT_API_ACCESS_HASH_VERSION;
     const scopes = normalizeScopes(input.scopes);
     const secretBytes = input.secretBytes ?? 32;
     if (!Number.isInteger(secretBytes) || secretBytes < 16) {
         throw new Error("Credential secrets require at least 16 random bytes.");
     }
-    const secret = `${input.prefix}${input.id}.${(0, node_crypto_1.randomBytes)(secretBytes).toString("base64url")}`;
+    const entropy = (0, node_crypto_1.randomBytes)(secretBytes).toString("base64url");
+    const secret = `${input.prefix}${input.id}.${entropy}`;
     const credential = Object.freeze({
         id: input.id,
         ownerId: input.ownerId,
         formatVersion: 1,
-        hashVersion: input.hashVersion ?? exports.SUPPORTED_API_ACCESS_HASH_VERSION,
+        hashVersion,
         pepperVersion: input.pepper.version,
-        secretHash: hashApiAccessSecret(parseApiAccessSecret(secret, input.prefix).secret, input.pepper.value),
+        secretHash: hashApiAccessSecret(entropy, input.pepper.value, hashVersion),
         scopes,
         createdAt: input.createdAt ?? new Date().toISOString(),
         workspaceId: input.workspaceId,
@@ -197,14 +212,21 @@ async function runApiAccessCredentialLifecycleConformance(input) {
     });
 }
 /** A deterministic hash suitable for host-owned credential lookup and storage. */
-function hashApiAccessSecret(secret, pepper) {
+function hashApiAccessSecret(secret, pepper, hashVersion = exports.DEFAULT_API_ACCESS_HASH_VERSION) {
     requireText(secret, "Credential secret");
     requireText(pepper, "Credential pepper");
-    return (0, node_crypto_1.createHash)("sha256").update(`${pepper}\u0000${secret}`).digest("base64url");
+    switch (hashVersion) {
+        case exports.API_ACCESS_HASH_VERSION_V1:
+            return (0, node_crypto_1.createHash)("sha256").update(`${pepper}\u0000${secret}`).digest("base64url");
+        case exports.API_ACCESS_HASH_VERSION_V2:
+            return (0, node_crypto_1.createHmac)("sha256", pepper).update(secret).digest("base64url");
+        default:
+            throw new Error(`Unsupported hash version "${hashVersion}".`);
+    }
 }
 /** Constant-time comparison for a host's stored credential hash. */
-function verifyApiAccessSecret(secret, storedHash, pepper) {
-    const candidate = Buffer.from(hashApiAccessSecret(secret, pepper));
+function verifyApiAccessSecret(secret, storedHash, pepper, hashVersion) {
+    const candidate = Buffer.from(hashApiAccessSecret(secret, pepper, hashVersion));
     const stored = Buffer.from(storedHash);
     return candidate.length === stored.length && (0, node_crypto_1.timingSafeEqual)(candidate, stored);
 }
@@ -243,13 +265,13 @@ async function authenticateApiAccessCredential(input) {
         return { ok: false, reason: "NOT_FOUND" };
     if (credential.formatVersion !== 1)
         return { ok: false, reason: "MALFORMED" };
-    if (credential.hashVersion !== exports.SUPPORTED_API_ACCESS_HASH_VERSION) {
+    if (!isSupportedHashVersion(credential.hashVersion)) {
         return { ok: false, reason: "UNSUPPORTED_HASH_VERSION" };
     }
     const pepper = peppers.find(credential.pepperVersion);
     if (!pepper)
         return { ok: false, reason: "UNKNOWN_PEPPER_VERSION" };
-    if (!verifyApiAccessSecret(parsed.secret, credential.secretHash, pepper.value)) {
+    if (!verifyApiAccessSecret(parsed.secret, credential.secretHash, pepper.value, credential.hashVersion)) {
         return { ok: false, reason: "HASH_MISMATCH" };
     }
     switch (getApiAccessCredentialStatus(credential, input.now)) {

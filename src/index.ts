@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export {
   createApiCommandFingerprint,
@@ -19,8 +19,21 @@ export {
 
 export type ApiAccessScope = string;
 
-/** The only `hashVersion` this package knows how to verify. */
-export const SUPPORTED_API_ACCESS_HASH_VERSION = "sha256-peppered-secret-v1";
+/** Legacy: SHA-256 over the pepper and secret joined by a NUL byte. Still verified for existing credentials. */
+export const API_ACCESS_HASH_VERSION_V1 = "sha256-peppered-secret-v1";
+/** HMAC-SHA256 keyed by the pepper over the secret. The current default. */
+export const API_ACCESS_HASH_VERSION_V2 = "hmac-sha256-peppered-secret-v2";
+/** Every hash version this package can verify. */
+export const SUPPORTED_API_ACCESS_HASH_VERSIONS = Object.freeze([
+  API_ACCESS_HASH_VERSION_V1,
+  API_ACCESS_HASH_VERSION_V2,
+] as const);
+/** The hash version new credentials are issued with. */
+export const DEFAULT_API_ACCESS_HASH_VERSION = API_ACCESS_HASH_VERSION_V2;
+export type ApiAccessHashVersion = (typeof SUPPORTED_API_ACCESS_HASH_VERSIONS)[number];
+export function isSupportedHashVersion(value: string): value is ApiAccessHashVersion {
+  return (SUPPORTED_API_ACCESS_HASH_VERSIONS as readonly string[]).includes(value);
+}
 
 /** Storage-safe credential state. The secret itself never appears in this shape. */
 export interface ApiAccessCredential {
@@ -109,7 +122,7 @@ export interface IssueApiAccessCredentialInput {
   scopes: readonly ApiAccessScope[];
   prefix: string;
   pepper: ApiAccessPepper;
-  hashVersion?: string;
+  hashVersion?: ApiAccessHashVersion;
   createdAt?: string;
   workspaceId?: string;
   expiresAt?: string;
@@ -203,7 +216,7 @@ export interface IssueReplacementApiAccessCredentialInput {
   id: string;
   prefix: string;
   pepper: ApiAccessPepper;
-  hashVersion?: string;
+  hashVersion?: ApiAccessHashVersion;
   createdAt?: string;
   now?: Date;
   secretBytes?: number;
@@ -279,24 +292,26 @@ export function issueApiAccessCredential(
   if (!/^[a-z][a-z0-9_-]*$/i.test(input.prefix)) {
     throw new Error("Credential prefix must contain only letters, numbers, underscores, or dashes.");
   }
-  if (input.hashVersion !== undefined && input.hashVersion !== SUPPORTED_API_ACCESS_HASH_VERSION) {
+  if (input.hashVersion !== undefined && !isSupportedHashVersion(input.hashVersion)) {
     throw new Error(
-      `Unsupported hash version "${input.hashVersion}"; this package can only verify "${SUPPORTED_API_ACCESS_HASH_VERSION}".`,
+      `Unsupported hash version "${input.hashVersion}"; supported: ${SUPPORTED_API_ACCESS_HASH_VERSIONS.join(", ")}.`,
     );
   }
+  const hashVersion = input.hashVersion ?? DEFAULT_API_ACCESS_HASH_VERSION;
   const scopes = normalizeScopes(input.scopes);
   const secretBytes = input.secretBytes ?? 32;
   if (!Number.isInteger(secretBytes) || secretBytes < 16) {
     throw new Error("Credential secrets require at least 16 random bytes.");
   }
-  const secret = `${input.prefix}${input.id}.${randomBytes(secretBytes).toString("base64url")}`;
+  const entropy = randomBytes(secretBytes).toString("base64url");
+  const secret = `${input.prefix}${input.id}.${entropy}`;
   const credential: ApiAccessCredential = Object.freeze({
     id: input.id,
     ownerId: input.ownerId,
     formatVersion: 1,
-    hashVersion: input.hashVersion ?? SUPPORTED_API_ACCESS_HASH_VERSION,
+    hashVersion,
     pepperVersion: input.pepper.version,
-    secretHash: hashApiAccessSecret(parseApiAccessSecret(secret, input.prefix)!.secret, input.pepper.value),
+    secretHash: hashApiAccessSecret(entropy, input.pepper.value, hashVersion),
     scopes,
     createdAt: input.createdAt ?? new Date().toISOString(),
     workspaceId: input.workspaceId,
@@ -389,15 +404,31 @@ export async function runApiAccessCredentialLifecycleConformance(
 }
 
 /** A deterministic hash suitable for host-owned credential lookup and storage. */
-export function hashApiAccessSecret(secret: string, pepper: string): string {
+export function hashApiAccessSecret(
+  secret: string,
+  pepper: string,
+  hashVersion: ApiAccessHashVersion = DEFAULT_API_ACCESS_HASH_VERSION,
+): string {
   requireText(secret, "Credential secret");
   requireText(pepper, "Credential pepper");
-  return createHash("sha256").update(`${pepper}\u0000${secret}`).digest("base64url");
+  switch (hashVersion) {
+    case API_ACCESS_HASH_VERSION_V1:
+      return createHash("sha256").update(`${pepper}\u0000${secret}`).digest("base64url");
+    case API_ACCESS_HASH_VERSION_V2:
+      return createHmac("sha256", pepper).update(secret).digest("base64url");
+    default:
+      throw new Error(`Unsupported hash version "${hashVersion}".`);
+  }
 }
 
 /** Constant-time comparison for a host's stored credential hash. */
-export function verifyApiAccessSecret(secret: string, storedHash: string, pepper: string): boolean {
-  const candidate = Buffer.from(hashApiAccessSecret(secret, pepper));
+export function verifyApiAccessSecret(
+  secret: string,
+  storedHash: string,
+  pepper: string,
+  hashVersion: ApiAccessHashVersion,
+): boolean {
+  const candidate = Buffer.from(hashApiAccessSecret(secret, pepper, hashVersion));
   const stored = Buffer.from(storedHash);
   return candidate.length === stored.length && timingSafeEqual(candidate, stored);
 }
@@ -436,12 +467,12 @@ export async function authenticateApiAccessCredential(
   const credential = await input.store.findById(parsed.id);
   if (!credential) return { ok: false, reason: "NOT_FOUND" };
   if (credential.formatVersion !== 1) return { ok: false, reason: "MALFORMED" };
-  if (credential.hashVersion !== SUPPORTED_API_ACCESS_HASH_VERSION) {
+  if (!isSupportedHashVersion(credential.hashVersion)) {
     return { ok: false, reason: "UNSUPPORTED_HASH_VERSION" };
   }
   const pepper = peppers.find(credential.pepperVersion);
   if (!pepper) return { ok: false, reason: "UNKNOWN_PEPPER_VERSION" };
-  if (!verifyApiAccessSecret(parsed.secret, credential.secretHash, pepper.value)) {
+  if (!verifyApiAccessSecret(parsed.secret, credential.secretHash, pepper.value, credential.hashVersion)) {
     return { ok: false, reason: "HASH_MISMATCH" };
   }
   switch (getApiAccessCredentialStatus(credential, input.now)) {
