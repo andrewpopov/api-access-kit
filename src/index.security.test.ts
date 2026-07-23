@@ -8,13 +8,14 @@ import {
   getApiAccessCredentialStatus,
   hashApiAccessSecret,
   issueApiAccessCredential,
+  MAX_API_ACCESS_SECRET_BYTES,
   issueReplacementApiAccessCredential,
   parseApiAccessSecret,
   verifyApiAccessSecret,
   type ApiAccessCredential,
 } from "./index.js";
 
-const pepper = { version: "2026-01", value: "test-pepper" };
+const pepper = { version: "2026-01", value: "test-pepper-value" };
 
 describe("parseApiAccessSecret adversarial inputs", () => {
   it("rejects empty input", () => {
@@ -122,7 +123,7 @@ describe("pepper rotation and unknown pepper versions", () => {
         rawCredential: issued.secret,
         prefix: "miz_",
         store,
-        peppers: [{ version: "some-other-version", value: "unrelated" }],
+        peppers: [{ version: "some-other-version", value: "unrelated-pepper-value" }],
       }),
     ).resolves.toEqual({ ok: false, reason: "UNKNOWN_PEPPER_VERSION" });
   });
@@ -141,9 +142,9 @@ describe("pepper rotation and unknown pepper versions", () => {
   });
 
   it("supports many peppers in the ring simultaneously (multi-rotation)", async () => {
-    const p1 = { version: "v1", value: "value-1" };
-    const p2 = { version: "v2", value: "value-2" };
-    const p3 = { version: "v3", value: "value-3" };
+    const p1 = { version: "v1", value: "value-1-padded-pepper" };
+    const p2 = { version: "v2", value: "value-2-padded-pepper" };
+    const p3 = { version: "v3", value: "value-3-padded-pepper" };
     const issuedUnderP2 = issueApiAccessCredential({ id: "credential-2", ownerId: "user-1", prefix: "miz_", pepper: p2, scopes: ["read"] });
     const store = makeStore(issuedUnderP2.credential);
     await expect(
@@ -222,10 +223,10 @@ describe("lifecycle status precedence and expiry boundary", () => {
     expect(status).toBe("ACTIVE");
   });
 
-  it("authorizeApiAccess reports EXPIRED (not INVALID) for a malformed expiresAt", () => {
+  it("authorizeApiAccess reports INVALID for a malformed expiresAt", () => {
     const credential = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }).credential;
     const decision = authorizeApiAccess({ ...credential, expiresAt: "not-a-date" }, { scope: "items.read" });
-    expect(decision).toEqual({ allowed: false, reason: "EXPIRED" });
+    expect(decision).toEqual({ allowed: false, reason: "INVALID" });
   });
 
   it("authenticateApiAccessCredential surfaces REVOKED even when also expired", async () => {
@@ -291,7 +292,7 @@ describe("issueReplacementApiAccessCredential invariants", () => {
       workspaceId: "workspace-9",
       expiresAt: "2030-01-01T00:00:00.000Z",
     }).credential;
-    const newPepper = { version: "2027-01", value: "rotated-pepper" };
+    const newPepper = { version: "2027-01", value: "rotated-pepper-value" };
     const replacement = issueReplacementApiAccessCredential({
       credential: original,
       id: "credential-2",
@@ -326,13 +327,34 @@ describe("issueApiAccessCredential input validation", () => {
   it("rejects secretBytes below the 16-byte floor", () => {
     expect(() =>
       issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"], secretBytes: 8 }),
-    ).toThrow("at least 16 random bytes");
+    ).toThrow("between 16 and 256 random bytes");
   });
 
   it("rejects a non-integer secretBytes", () => {
     expect(() =>
       issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"], secretBytes: 16.5 }),
-    ).toThrow("at least 16 random bytes");
+    ).toThrow("between 16 and 256 random bytes");
+  });
+
+  it("rejects secretBytes above the upper bound", () => {
+    expect(() =>
+      issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"], secretBytes: 100000 }),
+    ).toThrow("between 16 and 256 random bytes");
+  });
+
+  it("issues a credential at MAX_API_ACCESS_SECRET_BYTES that still authenticates (raw-credential bound consistency)", async () => {
+    const issued = issueApiAccessCredential({
+      id: "credential-1",
+      ownerId: "user-1",
+      prefix: "miz_",
+      pepper,
+      scopes: ["items.read"],
+      secretBytes: MAX_API_ACCESS_SECRET_BYTES,
+    });
+    const store = { findById: async () => issued.credential };
+    await expect(
+      authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper] }),
+    ).resolves.toEqual({ ok: true, credential: issued.credential });
   });
 
   it("rejects an empty id, ownerId, or pepper value", () => {
@@ -436,5 +458,83 @@ describe("hash version v1/v2 support", () => {
     await expect(
       authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper] }),
     ).resolves.toEqual({ ok: false, reason: "UNSUPPORTED_HASH_VERSION" });
+  });
+});
+
+describe("minimum pepper strength", () => {
+  it("defineApiAccessPepperRing rejects a pepper shorter than 16 characters", () => {
+    expect(() => defineApiAccessPepperRing([{ version: "v1", value: "tooshort" }])).toThrow(/at least 16 characters/);
+  });
+
+  it("issueApiAccessCredential rejects a pepper shorter than 16 characters", () => {
+    expect(() =>
+      issueApiAccessCredential({
+        id: "credential-1",
+        ownerId: "user-1",
+        prefix: "miz_",
+        pepper: { version: "v1", value: "tooshort" },
+        scopes: ["items.read"],
+      }),
+    ).toThrow(/at least 16 characters/);
+  });
+});
+
+describe("NOT_FOUND timing mitigation", () => {
+  it("still authenticates to NOT_FOUND without throwing when the store misses", async () => {
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] });
+    const store = { findById: async () => null };
+    await expect(
+      authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper] }),
+    ).resolves.toEqual({ ok: false, reason: "NOT_FOUND" });
+  });
+});
+
+describe("input upper bounds", () => {
+  it("authenticateApiAccessCredential reports MALFORMED for an over-length raw credential", async () => {
+    const store = { findById: async () => null };
+    const oversized = `miz_credential-1.${"a".repeat(5000)}`;
+    await expect(
+      authenticateApiAccessCredential({ rawCredential: oversized, prefix: "miz_", store, peppers: [pepper] }),
+    ).resolves.toEqual({ ok: false, reason: "MALFORMED" });
+  });
+});
+
+describe("strict ISO timestamp parsing", () => {
+  it("treats a date-only expiresAt as INVALID", () => {
+    expect(getApiAccessCredentialStatus({ expiresAt: "2026-07-23" })).toBe("INVALID");
+  });
+
+  it("treats a nonsense expiresAt as INVALID", () => {
+    expect(getApiAccessCredentialStatus({ expiresAt: "not-a-date" })).toBe("INVALID");
+  });
+
+  it("authorizeApiAccess reports INVALID for a date-only expiresAt", () => {
+    const credential = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }).credential;
+    expect(authorizeApiAccess({ ...credential, expiresAt: "2026-07-23" }, { scope: "items.read" })).toEqual({
+      allowed: false,
+      reason: "INVALID",
+    });
+  });
+
+  it("still accepts a full ISO timestamp for ACTIVE and EXPIRED", () => {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    expect(getApiAccessCredentialStatus({ expiresAt: "2026-06-01T00:00:00.000Z" }, now)).toBe("ACTIVE");
+    expect(getApiAccessCredentialStatus({ expiresAt: "2025-06-01T00:00:00.000Z" }, now)).toBe("EXPIRED");
+  });
+
+  it("treats an impossible day-of-month (Feb 30) as INVALID", () => {
+    expect(getApiAccessCredentialStatus({ expiresAt: "2026-02-30T00:00:00Z" })).toBe("INVALID");
+  });
+
+  it("treats an out-of-range month (13) as INVALID", () => {
+    expect(getApiAccessCredentialStatus({ expiresAt: "2026-13-01T00:00:00Z" })).toBe("INVALID");
+  });
+
+  it("treats Feb 29 in a non-leap year (2026) as INVALID", () => {
+    expect(getApiAccessCredentialStatus({ expiresAt: "2026-02-29T00:00:00Z" })).toBe("INVALID");
+  });
+
+  it("accepts Feb 29 in a leap year (2024) as a valid calendar date", () => {
+    expect(getApiAccessCredentialStatus({ expiresAt: "2024-02-29T00:00:00Z" })).not.toBe("INVALID");
   });
 });

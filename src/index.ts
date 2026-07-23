@@ -34,9 +34,20 @@ export type ApiAccessHashVersion = (typeof SUPPORTED_API_ACCESS_HASH_VERSIONS)[n
 export function isSupportedHashVersion(value: string): value is ApiAccessHashVersion {
   return (SUPPORTED_API_ACCESS_HASH_VERSIONS as readonly string[]).includes(value);
 }
+/** Minimum length, in characters, required for a pepper value (v1 hash pepper / v2 HMAC key). */
+export const MIN_API_ACCESS_PEPPER_LENGTH = 16;
+/** Maximum accepted length, in characters, for a raw credential string presented for authentication. */
+export const MAX_RAW_CREDENTIAL_LENGTH = 4096;
+/**
+ * Maximum accepted random secret size, in bytes, at issuance. 256 bytes
+ * (2048-bit secret) base64url-encodes to ~342 characters, leaving huge margin
+ * under `MAX_RAW_CREDENTIAL_LENGTH` so an issued credential always remains
+ * authenticatable.
+ */
+export const MAX_API_ACCESS_SECRET_BYTES = 256;
 
 /** Storage-safe credential state. The secret itself never appears in this shape. */
-export interface ApiAccessCredential {
+export interface ApiAccessCredential<Scopes extends ApiAccessScope = ApiAccessScope> {
   id: string;
   /** Accountable issuer/lifecycle owner. This is not necessarily the runtime authorization principal. */
   ownerId: string;
@@ -47,7 +58,7 @@ export interface ApiAccessCredential {
   /** Identifies the pepper used to create `secretHash`. */
   pepperVersion: string;
   secretHash: string;
-  scopes: readonly ApiAccessScope[];
+  scopes: readonly Scopes[];
   createdAt: string;
   workspaceId?: string;
   expiresAt?: string;
@@ -95,14 +106,16 @@ export function createApiAccessPrincipalBinding(input: CreateApiAccessPrincipalB
 }
 
 /** The only response shape which may carry a raw credential secret. */
-export interface IssuedApiAccessCredential {
-  credential: ApiAccessCredential;
+export interface IssuedApiAccessCredential<Scopes extends ApiAccessScope = ApiAccessScope> {
+  credential: ApiAccessCredential<Scopes>;
   secret: string;
 }
 
 export type ApiAccessDenyReason =
   | "REVOKED"
   | "EXPIRED"
+  /** A malformed lifecycle timestamp surfaces as `INVALID` here and as `MALFORMED` at the authentication layer — same underlying state, layer-appropriate name. */
+  | "INVALID"
   | "WORKSPACE_MISMATCH"
   | "SCOPE_DENIED";
 
@@ -110,16 +123,16 @@ export type ApiAccessDecision =
   | { allowed: true }
   | { allowed: false; reason: ApiAccessDenyReason };
 
-export interface ApiAccessRequest {
-  scope: ApiAccessScope;
+export interface ApiAccessRequest<Scopes extends ApiAccessScope = ApiAccessScope> {
+  scope: Scopes;
   workspaceId?: string;
   now?: Date;
 }
 
-export interface IssueApiAccessCredentialInput {
+export interface IssueApiAccessCredentialInput<Scopes extends ApiAccessScope = ApiAccessScope> {
   id: string;
   ownerId: string;
-  scopes: readonly ApiAccessScope[];
+  scopes: readonly Scopes[];
   prefix: string;
   pepper: ApiAccessPepper;
   hashVersion?: ApiAccessHashVersion;
@@ -211,8 +224,8 @@ export interface DefinedApiAccessPepperRing {
 
 export type ApiAccessCredentialStatus = "ACTIVE" | "REVOKED" | "EXPIRED" | "INVALID";
 
-export interface IssueReplacementApiAccessCredentialInput {
-  credential: ApiAccessCredential;
+export interface IssueReplacementApiAccessCredentialInput<Scopes extends ApiAccessScope = ApiAccessScope> {
+  credential: ApiAccessCredential<Scopes>;
   id: string;
   prefix: string;
   pepper: ApiAccessPepper;
@@ -260,7 +273,7 @@ export function defineApiAccessPepperRing(
   const seen = new Set<string>();
   const values = peppers.map((pepper) => {
     requireText(pepper.version, "Credential pepper version");
-    requireText(pepper.value, "Credential pepper");
+    requirePepper(pepper.value);
     if (seen.has(pepper.version)) {
       throw new Error(`Duplicate credential pepper version: ${pepper.version}`);
     }
@@ -281,14 +294,14 @@ export function defineApiAccessPepperRing(
  * Issue a v1 opaque credential once; persist only the public id and a hash of
  * its random secret segment. `prefix` is literal (for example `cairn_`).
  */
-export function issueApiAccessCredential(
-  input: IssueApiAccessCredentialInput,
-): IssuedApiAccessCredential {
+export function issueApiAccessCredential<const Scopes extends ApiAccessScope = ApiAccessScope>(
+  input: IssueApiAccessCredentialInput<Scopes>,
+): IssuedApiAccessCredential<Scopes> {
   requireText(input.id, "Credential id");
   requireText(input.ownerId, "Credential owner id");
   requireText(input.prefix, "Credential prefix");
   requireText(input.pepper.version, "Credential pepper version");
-  requireText(input.pepper.value, "Credential pepper");
+  requirePepper(input.pepper.value);
   if (!/^[a-z][a-z0-9_-]*$/i.test(input.prefix)) {
     throw new Error("Credential prefix must contain only letters, numbers, underscores, or dashes.");
   }
@@ -300,12 +313,12 @@ export function issueApiAccessCredential(
   const hashVersion = input.hashVersion ?? DEFAULT_API_ACCESS_HASH_VERSION;
   const scopes = normalizeScopes(input.scopes);
   const secretBytes = input.secretBytes ?? 32;
-  if (!Number.isInteger(secretBytes) || secretBytes < 16) {
-    throw new Error("Credential secrets require at least 16 random bytes.");
+  if (!Number.isInteger(secretBytes) || secretBytes < 16 || secretBytes > MAX_API_ACCESS_SECRET_BYTES) {
+    throw new Error(`Credential secrets must be between 16 and ${MAX_API_ACCESS_SECRET_BYTES} random bytes.`);
   }
   const entropy = randomBytes(secretBytes).toString("base64url");
   const secret = `${input.prefix}${input.id}.${entropy}`;
-  const credential: ApiAccessCredential = Object.freeze({
+  const credential: ApiAccessCredential<Scopes> = Object.freeze({
     id: input.id,
     ownerId: input.ownerId,
     formatVersion: 1,
@@ -325,9 +338,9 @@ export function issueApiAccessCredential(
  * portable lifecycle fields. The host atomically applies the replacement and
  * decides whether that means a new application row or an in-place update.
  */
-export function issueReplacementApiAccessCredential(
-  input: IssueReplacementApiAccessCredentialInput,
-): IssuedApiAccessCredential {
+export function issueReplacementApiAccessCredential<const Scopes extends ApiAccessScope = ApiAccessScope>(
+  input: IssueReplacementApiAccessCredentialInput<Scopes>,
+): IssuedApiAccessCredential<Scopes> {
   if (getApiAccessCredentialStatus(input.credential, input.now) !== "ACTIVE") {
     throw new Error("Only an active API credential can be replaced.");
   }
@@ -433,6 +446,9 @@ export function verifyApiAccessSecret(
   return candidate.length === stored.length && timingSafeEqual(candidate, stored);
 }
 
+const TIMING_SAFE_DUMMY_PEPPER = "timing-safe-dummy-pepper-value";
+const TIMING_SAFE_DUMMY_HASH = hashApiAccessSecret("timing-safe-dummy-secret", TIMING_SAFE_DUMMY_PEPPER, DEFAULT_API_ACCESS_HASH_VERSION);
+
 /** Parse the public credential id from an opaque secret for indexed lookup. */
 export function parseApiAccessSecret(
   secret: string,
@@ -456,6 +472,7 @@ export function parseApiAccessSecret(
 export async function authenticateApiAccessCredential(
   input: AuthenticateApiAccessCredentialInput,
 ): Promise<ApiAccessAuthentication> {
+  if (input.rawCredential.length > MAX_RAW_CREDENTIAL_LENGTH) return { ok: false, reason: "MALFORMED" };
   const parsed = parseApiAccessSecret(input.rawCredential, input.prefix);
   if (!parsed) return { ok: false, reason: "MALFORMED" };
   let peppers: DefinedApiAccessPepperRing;
@@ -465,7 +482,12 @@ export async function authenticateApiAccessCredential(
     return { ok: false, reason: "INVALID_PEPPER_RING" };
   }
   const credential = await input.store.findById(parsed.id);
-  if (!credential) return { ok: false, reason: "NOT_FOUND" };
+  if (!credential) {
+    // Constant-time-ish: do equivalent hashing work so response timing does not
+    // reveal whether a credential id exists (ids are public, but avoid the oracle).
+    verifyApiAccessSecret(parsed.secret, TIMING_SAFE_DUMMY_HASH, TIMING_SAFE_DUMMY_PEPPER, DEFAULT_API_ACCESS_HASH_VERSION);
+    return { ok: false, reason: "NOT_FOUND" };
+  }
   if (credential.formatVersion !== 1) return { ok: false, reason: "MALFORMED" };
   if (!isSupportedHashVersion(credential.hashVersion)) {
     return { ok: false, reason: "UNSUPPORTED_HASH_VERSION" };
@@ -493,8 +515,8 @@ export function getApiAccessCredentialStatus(
 ): ApiAccessCredentialStatus {
   if (credential.revokedAt) return "REVOKED";
   if (!credential.expiresAt) return "ACTIVE";
-  const expiresAt = new Date(credential.expiresAt).getTime();
-  if (Number.isNaN(expiresAt)) return "INVALID";
+  const expiresAt = parseIsoTimestamp(credential.expiresAt);
+  if (expiresAt === null) return "INVALID";
   return expiresAt <= now.getTime() ? "EXPIRED" : "ACTIVE";
 }
 
@@ -513,15 +535,14 @@ export function formatApiAccessCredentialMask(prefix: string, credentialId: stri
  * binding. A successful decision is not product authorization: callers must
  * still check their own workspace/resource policy for the credential owner.
  */
-export function authorizeApiAccess(
-  credential: ApiAccessCredential,
-  request: ApiAccessRequest,
+export function authorizeApiAccess<Scopes extends ApiAccessScope = ApiAccessScope>(
+  credential: ApiAccessCredential<Scopes>,
+  request: ApiAccessRequest<Scopes>,
 ): ApiAccessDecision {
   const status = getApiAccessCredentialStatus(credential, request.now);
   if (status === "REVOKED") return { allowed: false, reason: "REVOKED" };
-  if (status === "EXPIRED" || status === "INVALID") {
-    return { allowed: false, reason: "EXPIRED" };
-  }
+  if (status === "EXPIRED") return { allowed: false, reason: "EXPIRED" };
+  if (status === "INVALID") return { allowed: false, reason: "INVALID" };
   if (credential.workspaceId && credential.workspaceId !== request.workspaceId) {
     return { allowed: false, reason: "WORKSPACE_MISMATCH" };
   }
@@ -537,7 +558,7 @@ export function toApiAccessCredentialMetadata(
   return Object.freeze({ ...metadata, scopes: Object.freeze([...credential.scopes]) });
 }
 
-function normalizeScopes(scopes: readonly ApiAccessScope[]): readonly ApiAccessScope[] {
+function normalizeScopes<Scopes extends ApiAccessScope>(scopes: readonly Scopes[]): readonly Scopes[] {
   const values = [...new Set(scopes)];
   if (values.length === 0) throw new Error("At least one API scope is required.");
   for (const scope of values) requireText(scope, "API scope");
@@ -573,4 +594,36 @@ function assertCredentialEquivalent(
 
 function requireText(value: string, label: string): void {
   if (!value.trim()) throw new Error(`${label} must not be empty.`);
+}
+
+function requirePepper(value: string): void {
+  requireText(value, "Credential pepper");
+  if (value.length < MIN_API_ACCESS_PEPPER_LENGTH) {
+    throw new Error(`Credential pepper must be at least ${MIN_API_ACCESS_PEPPER_LENGTH} characters.`);
+  }
+}
+
+function parseIsoTimestamp(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (month < 1 || month > 12) return null;
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function daysInMonth(year: number, month: number): number {
+  const daysByMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return daysByMonth[month - 1];
+}
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
