@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+
+- Add HMAC-SHA256 as `hashVersion` v2 (`API_ACCESS_HASH_VERSION_V2`), now the
+  default for newly issued credentials (`DEFAULT_API_ACCESS_HASH_VERSION`); v1
+  (`API_ACCESS_HASH_VERSION_V1`, SHA-256) remains fully verifiable for existing
+  stored credentials, and `authenticateApiAccessCredential` dispatches on each
+  credential's own stored `hashVersion`.
+- **Breaking:** `verifyApiAccessSecret` now requires a `hashVersion` argument
+  so callers cannot silently mis-verify a hash against the wrong algorithm.
+- **Breaking:** remove the single-version `SUPPORTED_API_ACCESS_HASH_VERSION`
+  constant in favor of `SUPPORTED_API_ACCESS_HASH_VERSIONS`,
+  `DEFAULT_API_ACCESS_HASH_VERSION`, and `isSupportedHashVersion`.
+- Fix the README install pin (`#v0.5.0` → `#v0.7.0`) and its
+  `credentialStore.insert` doc bug (the lifecycle store method is `create`).
+
 ## 0.6.0
 
 - Fail closed with a new `UNSUPPORTED_HASH_VERSION` authentication reason when

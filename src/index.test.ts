@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  API_ACCESS_HASH_VERSION_V2,
   authorizeApiAccess,
   authenticateApiAccessCredential,
   createApiAccessPrincipalBinding,
@@ -64,8 +65,8 @@ describe("api-access-kit", () => {
     expect(issued.credential.secretHash).not.toContain(issued.secret);
     expect(parseApiAccessSecret(issued.secret, "miz_")).toMatchObject({ id: "credential-1" });
     const parsed = parseApiAccessSecret(issued.secret, "miz_")!;
-    expect(verifyApiAccessSecret(parsed.secret, issued.credential.secretHash, pepper.value)).toBe(true);
-    expect(verifyApiAccessSecret(`${parsed.secret}x`, issued.credential.secretHash, pepper.value)).toBe(false);
+    expect(verifyApiAccessSecret(parsed.secret, issued.credential.secretHash, pepper.value, API_ACCESS_HASH_VERSION_V2)).toBe(true);
+    expect(verifyApiAccessSecret(`${parsed.secret}x`, issued.credential.secretHash, pepper.value, API_ACCESS_HASH_VERSION_V2)).toBe(false);
   });
 
   it("fails closed for lifecycle, scope, and workspace constraints", () => {
@@ -107,7 +108,7 @@ describe("api-access-kit", () => {
 
   it("rejects authentication for a credential stamped with an unsupported hashVersion", async () => {
     const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] });
-    expect(issued.credential.hashVersion).toBe("sha256-peppered-secret-v1");
+    expect(issued.credential.hashVersion).toBe(API_ACCESS_HASH_VERSION_V2);
     const store = { findById: async () => ({ ...issued.credential, hashVersion: "argon2id-v2" }) };
     await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper] })).resolves.toEqual({ ok: false, reason: "UNSUPPORTED_HASH_VERSION" });
 
@@ -117,7 +118,7 @@ describe("api-access-kit", () => {
 
   it("rejects issuance with an unsupported hashVersion", () => {
     expect(() =>
-      issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"], hashVersion: "argon2id-v2" }),
+      issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"], hashVersion: "argon2id-v2" as unknown as typeof API_ACCESS_HASH_VERSION_V2 }),
     ).toThrow('Unsupported hash version "argon2id-v2"');
   });
 

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  API_ACCESS_HASH_VERSION_V1,
+  API_ACCESS_HASH_VERSION_V2,
   authenticateApiAccessCredential,
   authorizeApiAccess,
   defineApiAccessPepperRing,
@@ -62,26 +64,26 @@ describe("verifyApiAccessSecret", () => {
   it("passes for the exact original secret", () => {
     const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["read"] });
     const parsed = parseApiAccessSecret(issued.secret, "miz_")!;
-    expect(verifyApiAccessSecret(parsed.secret, issued.credential.secretHash, pepper.value)).toBe(true);
+    expect(verifyApiAccessSecret(parsed.secret, issued.credential.secretHash, pepper.value, API_ACCESS_HASH_VERSION_V2)).toBe(true);
   });
 
   it("fails when the secret is off by a single character", () => {
     const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["read"] });
     const parsed = parseApiAccessSecret(issued.secret, "miz_")!;
     const flipped = parsed.secret.slice(0, -1) + (parsed.secret.at(-1) === "a" ? "b" : "a");
-    expect(verifyApiAccessSecret(flipped, issued.credential.secretHash, pepper.value)).toBe(false);
+    expect(verifyApiAccessSecret(flipped, issued.credential.secretHash, pepper.value, API_ACCESS_HASH_VERSION_V2)).toBe(false);
   });
 
   it("fails when hashed with the wrong pepper", () => {
     const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["read"] });
     const parsed = parseApiAccessSecret(issued.secret, "miz_")!;
-    expect(verifyApiAccessSecret(parsed.secret, issued.credential.secretHash, "wrong-pepper")).toBe(false);
+    expect(verifyApiAccessSecret(parsed.secret, issued.credential.secretHash, "wrong-pepper", API_ACCESS_HASH_VERSION_V2)).toBe(false);
   });
 
   it("does not throw on hashes of a different length", () => {
     const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["read"] });
     const parsed = parseApiAccessSecret(issued.secret, "miz_")!;
-    expect(verifyApiAccessSecret(parsed.secret, "short-hash", pepper.value)).toBe(false);
+    expect(verifyApiAccessSecret(parsed.secret, "short-hash", pepper.value, API_ACCESS_HASH_VERSION_V2)).toBe(false);
   });
 
   it("hashApiAccessSecret is deterministic for identical inputs", () => {
@@ -343,5 +345,96 @@ describe("issueApiAccessCredential input validation", () => {
     expect(() =>
       issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper: { version: "v1", value: "" }, scopes: ["items.read"] }),
     ).toThrow("Credential pepper");
+  });
+});
+
+describe("hash version v1/v2 support", () => {
+  const makeStore = (credential: ApiAccessCredential) => ({ findById: async () => credential });
+
+  it("defaults freshly issued credentials to hashVersion v2", () => {
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["read"] });
+    expect(issued.credential.hashVersion).toBe(API_ACCESS_HASH_VERSION_V2);
+  });
+
+  it("authenticates a v2 credential end-to-end", async () => {
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["read"] });
+    const store = makeStore(issued.credential);
+    await expect(
+      authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper] }),
+    ).resolves.toMatchObject({ ok: true });
+  });
+
+  it("still authenticates a credential explicitly issued with hashVersion v1 (back-compat)", async () => {
+    const issued = issueApiAccessCredential({
+      id: "credential-1",
+      ownerId: "user-1",
+      prefix: "miz_",
+      pepper,
+      scopes: ["read"],
+      hashVersion: API_ACCESS_HASH_VERSION_V1,
+    });
+    expect(issued.credential.hashVersion).toBe(API_ACCESS_HASH_VERSION_V1);
+    const store = makeStore(issued.credential);
+    await expect(
+      authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper] }),
+    ).resolves.toMatchObject({ ok: true });
+  });
+
+  it("authenticates a stored v1 credential against a frozen historical hash vector", async () => {
+    // Golden vector: secretHash independently computed as base64url(SHA-256(pepper + 0x00 + entropy))
+    // for entropy "abcdefghijklmnopqrstuvwxyz012345" and pepper "golden-pepper-value" — the exact
+    // v1 algorithm as it shipped. If a future change to v1 hashing breaks this, it silently breaks
+    // every already-issued v1 credential, so this constant must never be "updated" to match new code.
+    const golden: ApiAccessCredential = Object.freeze({
+      id: "cred-v1",
+      ownerId: "user-1",
+      formatVersion: 1,
+      hashVersion: API_ACCESS_HASH_VERSION_V1,
+      pepperVersion: "golden",
+      secretHash: "rhdX-uNR87ldZTZexFwuzwi3lH8wso4nz2Ak-k-UuOg",
+      scopes: Object.freeze(["read"]),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const store = makeStore(golden);
+    await expect(
+      authenticateApiAccessCredential({
+        rawCredential: "golden_cred-v1.abcdefghijklmnopqrstuvwxyz012345",
+        prefix: "golden_",
+        store,
+        peppers: [{ version: "golden", value: "golden-pepper-value" }],
+      }),
+    ).resolves.toMatchObject({ ok: true });
+  });
+
+  it("produces different hashes for v1 and v2 given the same secret and pepper", () => {
+    const v1Hash = hashApiAccessSecret("secret-a", "pepper-a", API_ACCESS_HASH_VERSION_V1);
+    const v2Hash = hashApiAccessSecret("secret-a", "pepper-a", API_ACCESS_HASH_VERSION_V2);
+    expect(v1Hash).not.toBe(v2Hash);
+  });
+
+  it("verifyApiAccessSecret returns false when given the wrong hashVersion for a stored hash", () => {
+    const storedHash = hashApiAccessSecret("secret-a", "pepper-a", API_ACCESS_HASH_VERSION_V1);
+    expect(verifyApiAccessSecret("secret-a", storedHash, "pepper-a", API_ACCESS_HASH_VERSION_V2)).toBe(false);
+  });
+
+  it("rejects issuance with an unsupported hashVersion", () => {
+    expect(() =>
+      issueApiAccessCredential({
+        id: "credential-1",
+        ownerId: "user-1",
+        prefix: "miz_",
+        pepper,
+        scopes: ["read"],
+        hashVersion: "argon2id-v2" as unknown as typeof API_ACCESS_HASH_VERSION_V1,
+      }),
+    ).toThrow('Unsupported hash version "argon2id-v2"');
+  });
+
+  it("authenticates to UNSUPPORTED_HASH_VERSION when a stored credential's hashVersion is an unknown string", async () => {
+    const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["read"] });
+    const store = makeStore({ ...issued.credential, hashVersion: "argon2id-v2" });
+    await expect(
+      authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [pepper] }),
+    ).resolves.toEqual({ ok: false, reason: "UNSUPPORTED_HASH_VERSION" });
   });
 });

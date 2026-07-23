@@ -10,7 +10,7 @@ request middleware, user session, or product resource authorization.
 This package is distributed through immutable GitHub tags:
 
 ```bash
-npm install github:andrewpopov/api-access-kit#v0.5.0
+npm install github:andrewpopov/api-access-kit#v0.7.0
 ```
 
 ## Security boundary
@@ -67,7 +67,7 @@ const binding = createApiAccessPrincipalBinding({
   principalType: "organization",
   principalId: organization.id,
 });
-await credentialStore.insert(issued.credential);
+await credentialStore.create(issued.credential);
 await principalBindingStore.insert({
   ...binding,
   projectScopes: [project.id], // host-defined, immutable resource scope
@@ -95,7 +95,7 @@ const issued = issueApiAccessCredential({
   expiresAt,
 });
 
-await credentialStore.insert(issued.credential); // stores only `secretHash`
+await credentialStore.create(issued.credential); // stores only `secretHash`
 return issued.secret; // reveal once, never list it again
 ```
 
@@ -104,7 +104,9 @@ The v1 wire format is `<prefix><id>.<random-secret>`, for example
 secret segment authenticates the credential. Persist `formatVersion`,
 `hashVersion`, and `pepperVersion` with the hash. Keep prior named peppers in
 the verification key ring until their credentials have rotated; never rehash or
-log a raw credential during rotation.
+log a raw credential during rotation. New credentials default to HMAC-SHA256
+(`hashVersion` v2); v1 (`sha256-peppered-secret-v1`) credentials remain
+verifiable, so keep persisting each credential's own `hashVersion`.
 
 For HTTP, call `authenticateApiAccessCredential` from the host's raw-credential
 adapter, then let the HTTP kit map the successful record to its request context.
