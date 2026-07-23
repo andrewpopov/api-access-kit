@@ -24,7 +24,7 @@ import {
   evaluateApiCommandPrecondition,
 } from "./index.js";
 
-const pepper = { version: "2026-01", value: "test-pepper" };
+const pepper = { version: "2026-01", value: "test-pepper-value" };
 
 describe("api-access-kit", () => {
   it("separates an accountable credential owner from its resource authorization principal", () => {
@@ -90,7 +90,7 @@ describe("api-access-kit", () => {
   it("uses indexed public-id lookup and a pepper key ring without logging or storing the raw secret", async () => {
     const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] });
     const store = { findById: async (id: string) => id === issued.credential.id ? issued.credential : null };
-    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [{ version: "old", value: "old-pepper" }, pepper] })).resolves.toMatchObject({ ok: true, credential: { id: "credential-1" } });
+    await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [{ version: "old", value: "old-pepper-value" }, pepper] })).resolves.toMatchObject({ ok: true, credential: { id: "credential-1" } });
     await expect(authenticateApiAccessCredential({ rawCredential: `${issued.secret}x`, prefix: "miz_", store, peppers: [pepper] })).resolves.toEqual({ ok: false, reason: "HASH_MISMATCH" });
     await expect(authenticateApiAccessCredential({ rawCredential: issued.secret, prefix: "miz_", store, peppers: [] })).resolves.toEqual({ ok: false, reason: "INVALID_PEPPER_RING" });
   });
@@ -98,8 +98,8 @@ describe("api-access-kit", () => {
   it("validates pepper rings and fails closed when authentication receives an invalid ring", async () => {
     const issued = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["mizen.items.read"] });
     const store = { findById: async () => issued.credential };
-    const ring = defineApiAccessPepperRing([{ version: "old", value: "old-pepper" }, pepper]);
-    expect(ring.primary).toEqual({ version: "old", value: "old-pepper" });
+    const ring = defineApiAccessPepperRing([{ version: "old", value: "old-pepper-value" }, pepper]);
+    expect(ring.primary).toEqual({ version: "old", value: "old-pepper-value" });
     expect(ring.find("2026-01")).toEqual(pepper);
     expect(() => defineApiAccessPepperRing([])).toThrow("At least one API credential pepper");
     expect(() => defineApiAccessPepperRing([pepper, pepper])).toThrow("Duplicate credential pepper version");
@@ -215,5 +215,45 @@ describe("api-access-kit", () => {
     expect(() => commands.assert({ v: 1, idempotencyKey: "short", operation: "blocks.append", resource: { kind: "page", id: "page-1" }, payload: {} })).toThrow("idempotency key");
     expect(() => commands.assert({ v: 2, idempotencyKey: "command-0002", operation: "blocks.append", resource: { kind: "page", id: "page-1" }, payload: {} })).toThrow("Unsupported API command version");
     expect(() => commands.assert({ v: 1, idempotencyKey: "command-0002", operation: "blocks.append", resource: { kind: "page", id: "page-1" }, payload: { now: new Date() } })).toThrow("payload must be a JSON object");
+  });
+});
+
+describe("typed scope vocabulary (compile-time)", () => {
+  const typedPepper = { version: "2026-01", value: "typed-scope-test-pepper16" };
+  type Scope = "docs.read" | "docs.write";
+
+  it("compiles issuance and authorization against a pinned scope union", () => {
+    const credential = issueApiAccessCredential<Scope>({
+      id: "credential-typed",
+      ownerId: "user-1",
+      prefix: "miz_",
+      pepper: typedPepper,
+      scopes: ["docs.read"],
+    }).credential;
+
+    expect(authorizeApiAccess<Scope>(credential, { scope: "docs.write" })).toEqual({ allowed: false, reason: "SCOPE_DENIED" });
+
+    issueApiAccessCredential<Scope>({
+      id: "credential-typed-2",
+      ownerId: "user-1",
+      prefix: "miz_",
+      pepper: typedPepper,
+      // @ts-expect-error "docs.reed" is not a member of Scope
+      scopes: ["docs.reed"],
+    });
+
+    // @ts-expect-error "docs.reed" is not a member of Scope
+    authorizeApiAccess<Scope>(credential, { scope: "docs.reed" });
+  });
+
+  it("still accepts plain strings when no scope type parameter is pinned", () => {
+    const credential = issueApiAccessCredential({
+      id: "credential-untyped",
+      ownerId: "user-1",
+      prefix: "miz_",
+      pepper: typedPepper,
+      scopes: ["anything"],
+    }).credential;
+    expect(credential.scopes).toEqual(["anything"]);
   });
 });

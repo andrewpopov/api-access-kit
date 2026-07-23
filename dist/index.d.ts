@@ -10,8 +10,19 @@ export declare const SUPPORTED_API_ACCESS_HASH_VERSIONS: readonly ["sha256-peppe
 export declare const DEFAULT_API_ACCESS_HASH_VERSION = "hmac-sha256-peppered-secret-v2";
 export type ApiAccessHashVersion = (typeof SUPPORTED_API_ACCESS_HASH_VERSIONS)[number];
 export declare function isSupportedHashVersion(value: string): value is ApiAccessHashVersion;
+/** Minimum length, in characters, required for a pepper value (v1 hash pepper / v2 HMAC key). */
+export declare const MIN_API_ACCESS_PEPPER_LENGTH = 16;
+/** Maximum accepted length, in characters, for a raw credential string presented for authentication. */
+export declare const MAX_RAW_CREDENTIAL_LENGTH = 4096;
+/**
+ * Maximum accepted random secret size, in bytes, at issuance. 256 bytes
+ * (2048-bit secret) base64url-encodes to ~342 characters, leaving huge margin
+ * under `MAX_RAW_CREDENTIAL_LENGTH` so an issued credential always remains
+ * authenticatable.
+ */
+export declare const MAX_API_ACCESS_SECRET_BYTES = 256;
 /** Storage-safe credential state. The secret itself never appears in this shape. */
-export interface ApiAccessCredential {
+export interface ApiAccessCredential<Scopes extends ApiAccessScope = ApiAccessScope> {
     id: string;
     /** Accountable issuer/lifecycle owner. This is not necessarily the runtime authorization principal. */
     ownerId: string;
@@ -22,7 +33,7 @@ export interface ApiAccessCredential {
     /** Identifies the pepper used to create `secretHash`. */
     pepperVersion: string;
     secretHash: string;
-    scopes: readonly ApiAccessScope[];
+    scopes: readonly Scopes[];
     createdAt: string;
     workspaceId?: string;
     expiresAt?: string;
@@ -56,26 +67,28 @@ export interface CreateApiAccessPrincipalBindingInput {
  */
 export declare function createApiAccessPrincipalBinding(input: CreateApiAccessPrincipalBindingInput): ApiAccessPrincipalBinding;
 /** The only response shape which may carry a raw credential secret. */
-export interface IssuedApiAccessCredential {
-    credential: ApiAccessCredential;
+export interface IssuedApiAccessCredential<Scopes extends ApiAccessScope = ApiAccessScope> {
+    credential: ApiAccessCredential<Scopes>;
     secret: string;
 }
-export type ApiAccessDenyReason = "REVOKED" | "EXPIRED" | "WORKSPACE_MISMATCH" | "SCOPE_DENIED";
+export type ApiAccessDenyReason = "REVOKED" | "EXPIRED"
+/** A malformed lifecycle timestamp surfaces as `INVALID` here and as `MALFORMED` at the authentication layer — same underlying state, layer-appropriate name. */
+ | "INVALID" | "WORKSPACE_MISMATCH" | "SCOPE_DENIED";
 export type ApiAccessDecision = {
     allowed: true;
 } | {
     allowed: false;
     reason: ApiAccessDenyReason;
 };
-export interface ApiAccessRequest {
-    scope: ApiAccessScope;
+export interface ApiAccessRequest<Scopes extends ApiAccessScope = ApiAccessScope> {
+    scope: Scopes;
     workspaceId?: string;
     now?: Date;
 }
-export interface IssueApiAccessCredentialInput {
+export interface IssueApiAccessCredentialInput<Scopes extends ApiAccessScope = ApiAccessScope> {
     id: string;
     ownerId: string;
-    scopes: readonly ApiAccessScope[];
+    scopes: readonly Scopes[];
     prefix: string;
     pepper: ApiAccessPepper;
     hashVersion?: ApiAccessHashVersion;
@@ -152,8 +165,8 @@ export interface DefinedApiAccessPepperRing {
     find(version: string): ApiAccessPepper | undefined;
 }
 export type ApiAccessCredentialStatus = "ACTIVE" | "REVOKED" | "EXPIRED" | "INVALID";
-export interface IssueReplacementApiAccessCredentialInput {
-    credential: ApiAccessCredential;
+export interface IssueReplacementApiAccessCredentialInput<Scopes extends ApiAccessScope = ApiAccessScope> {
+    credential: ApiAccessCredential<Scopes>;
     id: string;
     prefix: string;
     pepper: ApiAccessPepper;
@@ -179,13 +192,13 @@ export declare function defineApiAccessPepperRing(peppers: readonly ApiAccessPep
  * Issue a v1 opaque credential once; persist only the public id and a hash of
  * its random secret segment. `prefix` is literal (for example `cairn_`).
  */
-export declare function issueApiAccessCredential(input: IssueApiAccessCredentialInput): IssuedApiAccessCredential;
+export declare function issueApiAccessCredential<const Scopes extends ApiAccessScope = ApiAccessScope>(input: IssueApiAccessCredentialInput<Scopes>): IssuedApiAccessCredential<Scopes>;
 /**
  * Issue fresh material for an active credential while preserving only the
  * portable lifecycle fields. The host atomically applies the replacement and
  * decides whether that means a new application row or an in-place update.
  */
-export declare function issueReplacementApiAccessCredential(input: IssueReplacementApiAccessCredentialInput): IssuedApiAccessCredential;
+export declare function issueReplacementApiAccessCredential<const Scopes extends ApiAccessScope = ApiAccessScope>(input: IssueReplacementApiAccessCredentialInput<Scopes>): IssuedApiAccessCredential<Scopes>;
 /**
  * Exercise a host adapter in an isolated store. This performs real lifecycle
  * writes, so consumers must provide a disposable fixture rather than a
@@ -217,6 +230,6 @@ export declare function formatApiAccessCredentialMask(prefix: string, credential
  * binding. A successful decision is not product authorization: callers must
  * still check their own workspace/resource policy for the credential owner.
  */
-export declare function authorizeApiAccess(credential: ApiAccessCredential, request: ApiAccessRequest): ApiAccessDecision;
+export declare function authorizeApiAccess<Scopes extends ApiAccessScope = ApiAccessScope>(credential: ApiAccessCredential<Scopes>, request: ApiAccessRequest<Scopes>): ApiAccessDecision;
 /** Remove secret hash material before returning list-safe metadata to a caller. */
 export declare function toApiAccessCredentialMetadata(credential: ApiAccessCredential): Omit<ApiAccessCredential, "secretHash">;

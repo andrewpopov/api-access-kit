@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.8.0
+
+- Add opt-in typed scopes: `ApiAccessCredential`, `IssuedApiAccessCredential`,
+  `IssueApiAccessCredentialInput`, `ApiAccessRequest`,
+  `IssueReplacementApiAccessCredentialInput`, `issueApiAccessCredential`,
+  `issueReplacementApiAccessCredential`, and `authorizeApiAccess` are now
+  generic over a `Scopes extends ApiAccessScope = ApiAccessScope` parameter.
+  Non-breaking: the default type parameter preserves the prior `string`
+  behavior for callers who do not opt in.
+- **Breaking:** enforce a minimum pepper length
+  (`MIN_API_ACCESS_PEPPER_LENGTH = 16`) in `defineApiAccessPepperRing` and
+  `issueApiAccessCredential`. A host pepper shorter than 16 characters now
+  throws instead of silently issuing a weakly-keyed credential.
+- **Breaking:** add `"INVALID"` to `ApiAccessDenyReason`. `authorizeApiAccess`
+  now returns this distinct reason for a malformed lifecycle timestamp, which
+  was previously mislabeled `"EXPIRED"`. An exhaustive `switch` over
+  `ApiAccessDenyReason` must add a case for it.
+- Mitigate a timing oracle on the not-found path: `authenticateApiAccessCredential`
+  performs a constant-time dummy hash when no credential matches the parsed id,
+  so response timing does not distinguish an unknown id from a hash mismatch.
+- `authenticateApiAccessCredential` now rejects a `rawCredential` longer than
+  `MAX_RAW_CREDENTIAL_LENGTH` (4096 characters) as `MALFORMED` before parsing.
+- `issueApiAccessCredential` now bounds `secretBytes` to between 16 and
+  `MAX_API_ACCESS_SECRET_BYTES` (256), throwing outside that range. 256 bytes
+  keeps the base64url-encoded secret well under `MAX_RAW_CREDENTIAL_LENGTH`, so
+  an issued credential is always authenticatable.
+- Parse `expiresAt` with strict ISO 8601 (`authorizeApiAccess` and
+  `authenticateApiAccessCredential`); a date-only or otherwise loose string no
+  longer resolves as a valid timestamp — it now surfaces as `INVALID` from
+  `authorizeApiAccess` and `MALFORMED` from `authenticateApiAccessCredential`.
+  Calendar components are also range-checked (month, day-of-month accounting
+  for leap years, hour, minute, second), so an impossible date like
+  `2026-02-30` no longer silently normalizes via `Date` and is rejected as
+  `INVALID`/`MALFORMED` instead.
+- Add `"sideEffects": false` to `package.json` so consumer bundlers can
+  tree-shake unused exports.
+- Add coverage tooling: a `coverage` script (`vitest run --coverage`) and
+  `vitest.config.ts` with v8 coverage thresholds over `src`.
+- Overhaul the README for accuracy: a Quick start section, a full API
+  reference table, a reason-code reference for `ApiAccessDenyReason` and
+  `ApiAccessAuthenticationFailure`, a typed-scopes example, and clearer
+  labeling of host-provided pseudocode in existing examples.
+- Fix `tsconfig.typecheck.json` so it actually typechecks the test files.
+
 ## 0.7.0
 
 - Add HMAC-SHA256 as `hashVersion` v2 (`API_ACCESS_HASH_VERSION_V2`), now the
