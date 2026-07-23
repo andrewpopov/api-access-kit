@@ -9,15 +9,29 @@ try {
   const tarball = execFileSync("npm", ["pack", "--json"], { encoding: "utf8" });
   const [{ filename }] = JSON.parse(tarball);
   execFileSync("npm", ["init", "-y"], { cwd: scratch, stdio: "ignore" });
-  execFileSync("npm", ["install", join(process.cwd(), filename), "github:andrewpopov/alert-kit#v0.4.0", "github:andrewpopov/release-kit#v0.1.2", "github:andrewpopov/express-security-kit#v1.6.0"], { cwd: scratch, stdio: "inherit" });
+  execFileSync("npm", ["install", join(process.cwd(), filename)], { cwd: scratch, stdio: "inherit" });
+  // Smoke-test this package's own packed surface via a native ESM import. This is
+  // deliberately hermetic: it installs only this tarball (zero runtime deps) and
+  // does not reach for sibling kits, so a sibling's tags or network can't red this gate.
   execFileSync("node", ["--input-type=module", "-e", `
     import * as access from '@andrewpopov/api-access-kit';
-    import { AlertDeliveryError } from '@andrewpopov/alert-kit';
-    import { createReleaseArtifactV1 } from '@andrewpopov/release-kit';
-    import { verifyApiKey } from '@andrewpopov/express-security-kit';
-    if (!access.authenticateApiAccessCredential || !AlertDeliveryError || !createReleaseArtifactV1 || !verifyApiKey) process.exit(2);
+    const required = [
+      'issueApiAccessCredential',
+      'issueReplacementApiAccessCredential',
+      'authenticateApiAccessCredential',
+      'authorizeApiAccess',
+      'defineApiScopes',
+      'defineApiAccessPepperRing',
+      'defineApiCommands',
+      'DEFAULT_API_ACCESS_HASH_VERSION',
+    ];
+    const missing = required.filter((name) => access[name] === undefined);
+    if (missing.length > 0) {
+      console.error('[verify:pack] missing exports: ' + missing.join(', '));
+      process.exit(2);
+    }
   `], { cwd: scratch, stdio: "inherit" });
-  console.log("[verify:pack] PASS: immutable packed shared-kit contracts install and expose their conformance surface.");
+  console.log("[verify:pack] PASS: the packed package installs and exposes its public surface (ESM import).");
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
