@@ -1,19 +1,41 @@
 {
   "name": "@andrewpopov/api-access-kit",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Pure opaque API credential lifecycle and exact-scope authorization primitives. Hosts own storage, routing, and resource authorization.",
   "author": "Andrew Popov",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/andrewpopov/api-access-kit.git" },
-  "bugs": { "url": "https://github.com/andrewpopov/api-access-kit/issues" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrewpopov/api-access-kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/andrewpopov/api-access-kit/issues"
+  },
   "homepage": "https://github.com/andrewpopov/api-access-kit#readme",
-  "keywords": ["api-keys", "credentials", "scopes", "authorization", "lifecycle", "typescript"],
+  "keywords": [
+    "api-keys",
+    "credentials",
+    "scopes",
+    "authorization",
+    "lifecycle",
+    "typescript"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "sideEffects": false,
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }, "./package.json": "./package.json" },
-  "files": ["dist"],
-  "engines": { "node": ">=20" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
