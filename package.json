@@ -51,7 +51,7 @@
     "release:hygiene": "release-kit hygiene"
   },
   "devDependencies": {
-    "@andrewpopov/release-kit": "github:andrewpopov/release-kit#v0.2.0",
+    "@andrewpopov/release-kit": "github:andrewpopov/release-kit#v0.3.1",
     "@types/node": "^20.14.0",
     "@vitest/coverage-v8": "^4.1.10",
     "typescript": "^5.5.0",
