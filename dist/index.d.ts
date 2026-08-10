@@ -38,6 +38,8 @@ export interface ApiAccessCredential<Scopes extends ApiAccessScope = ApiAccessSc
     workspaceId?: string;
     expiresAt?: string;
     revokedAt?: string;
+    /** Host-set watermark from the most recent `ApiAccessCredentialLifecycleStore.touchLastUsed` write. */
+    lastUsedAt?: string;
 }
 /**
  * Host-owned resource-authorization identity for an API credential.
@@ -116,6 +118,12 @@ export interface ApiAccessCredentialLifecycleStore extends ApiAccessCredentialSt
     create(credential: ApiAccessCredential): Promise<void>;
     replaceActive(input: ApiAccessCredentialReplacement): Promise<ApiAccessCredentialLifecycleMutation>;
     revokeActive(input: ApiAccessCredentialRevocation): Promise<ApiAccessCredentialLifecycleMutation>;
+    /**
+     * Persist `lastUsedAt` for `id`. `runApiAccessCredentialLifecycleConformance`
+     * reads the record back via `findById` afterward and asserts `lastUsedAt`
+     * matches, so a no-op implementation fails conformance rather than passing
+     * silently.
+     */
     touchLastUsed(id: string, lastUsedAt: string): Promise<void>;
 }
 export interface ApiAccessCredentialReplacement {

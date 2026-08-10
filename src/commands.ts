@@ -73,8 +73,14 @@ export function defineApiCommands<const Operation extends string>(
       if (typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 200)
         throw new Error("API command idempotency key must be 8-200 characters.");
       if (!isJsonObject(input.payload)) throw new Error("API command payload must be a JSON object.");
-      if (input.expectedVersion !== undefined && typeof input.expectedVersion !== "string")
-        throw new Error("API command expected version must be a string.");
+      if (input.expectedVersion !== undefined) {
+        if (typeof input.expectedVersion !== "string")
+          throw new Error("API command expected version must be a string.");
+        if (!input.expectedVersion.trim())
+          throw new Error(
+            "API command expected version must not be blank; omit it entirely if there is no precondition to enforce.",
+          );
+      }
       return Object.freeze({
         v: 1,
         idempotencyKey: input.idempotencyKey,
@@ -87,13 +93,22 @@ export function defineApiCommands<const Operation extends string>(
   });
 }
 
-/** Reject stale writes before the host mutates its authoritative content state. */
+/**
+ * Reject stale writes before the host mutates its authoritative content state.
+ * `expectedVersion === undefined` means "no precondition" and always passes.
+ * Any *defined* value — including a blank or whitespace-only string, however
+ * it arrived (through `defineApiCommands().assert`, which already rejects
+ * blank values, or a structurally-built envelope that bypassed it) — is
+ * compared for an exact match and fails closed: `actualVersion` is always
+ * non-blank, so a blank `expectedVersion` can never match it and is correctly
+ * treated as an unsatisfiable precondition, not a free pass.
+ */
 export function evaluateApiCommandPrecondition(
   expectedVersion: string | undefined,
   actualVersion: string,
 ): ApiCommandPrecondition {
   requireText(actualVersion, "Actual resource version");
-  if (!expectedVersion || expectedVersion === actualVersion) return { allowed: true };
+  if (expectedVersion === undefined || expectedVersion === actualVersion) return { allowed: true };
   return { allowed: false, reason: "VERSION_CONFLICT", expectedVersion, actualVersion };
 }
 

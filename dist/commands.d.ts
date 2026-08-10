@@ -57,7 +57,16 @@ export type ApiCommandIdempotency<Operation extends string = string> = {
  * authoritative content model.
  */
 export declare function defineApiCommands<const Operation extends string>(operations: readonly Operation[]): DefinedApiCommands<Operation>;
-/** Reject stale writes before the host mutates its authoritative content state. */
+/**
+ * Reject stale writes before the host mutates its authoritative content state.
+ * `expectedVersion === undefined` means "no precondition" and always passes.
+ * Any *defined* value — including a blank or whitespace-only string, however
+ * it arrived (through `defineApiCommands().assert`, which already rejects
+ * blank values, or a structurally-built envelope that bypassed it) — is
+ * compared for an exact match and fails closed: `actualVersion` is always
+ * non-blank, so a blank `expectedVersion` can never match it and is correctly
+ * treated as an unsatisfiable precondition, not a free pass.
+ */
 export declare function evaluateApiCommandPrecondition(expectedVersion: string | undefined, actualVersion: string): ApiCommandPrecondition;
 /**
  * Produces a stable request fingerprint for the host's idempotency ledger.

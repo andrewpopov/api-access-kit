@@ -117,7 +117,7 @@ function defineApiAccessPepperRing(peppers) {
  * its random secret segment. `prefix` is literal (for example `cairn_`).
  */
 function issueApiAccessCredential(input) {
-    requireText(input.id, "Credential id");
+    assertIssuableCredentialId(input.id);
     requireText(input.ownerId, "Credential owner id");
     requireText(input.prefix, "Credential prefix");
     requireText(input.pepper.version, "Credential pepper version");
@@ -136,6 +136,9 @@ function issueApiAccessCredential(input) {
     }
     const entropy = (0, node_crypto_1.randomBytes)(secretBytes).toString("base64url");
     const secret = `${input.prefix}${input.id}.${entropy}`;
+    if (secret.length > exports.MAX_RAW_CREDENTIAL_LENGTH) {
+        throw new Error(`Issued credential (prefix + id + secret) would be ${secret.length} characters, exceeding MAX_RAW_CREDENTIAL_LENGTH (${exports.MAX_RAW_CREDENTIAL_LENGTH}); it could never authenticate. Use a shorter prefix or id.`);
+    }
     const credential = Object.freeze({
         id: input.id,
         ownerId: input.ownerId,
@@ -217,6 +220,21 @@ async function runApiAccessCredentialLifecycleConformance(input) {
         throw new Error("Conformance revocation did not persist a revoked credential.");
     }
     await input.store.touchLastUsed(input.replacement.id, now);
+    const touched = await input.store.findById(input.replacement.id);
+    if (touched?.lastUsedAt === undefined) {
+        throw new Error("Conformance last-used touch did not persist a lastUsedAt timestamp.");
+    }
+    // Compare by instant, not by exact string: a conforming adapter may
+    // round-trip an ISO timestamp through a different (but equivalent) format,
+    // e.g. normalizing "…00Z" to "…00.000Z", or a database column that stores
+    // and returns a different offset representation of the same instant.
+    const touchedInstant = new Date(touched.lastUsedAt).getTime();
+    if (Number.isNaN(touchedInstant)) {
+        throw new Error(`Conformance last-used touch persisted an unparseable timestamp: "${touched.lastUsedAt}".`);
+    }
+    if (touchedInstant !== nowDate.getTime()) {
+        throw new Error(`Conformance last-used touch persisted a different instant than requested (requested ${now}, stored ${touched.lastUsedAt}).`);
+    }
     return Object.freeze({
         priorCredentialRetained: Boolean(prior),
         replacementCredentialId: input.replacement.id,
@@ -243,6 +261,19 @@ function verifyApiAccessSecret(secret, storedHash, pepper, hashVersion) {
 }
 const TIMING_SAFE_DUMMY_PEPPER = "timing-safe-dummy-pepper-value";
 const TIMING_SAFE_DUMMY_HASH = hashApiAccessSecret("timing-safe-dummy-secret", TIMING_SAFE_DUMMY_PEPPER, exports.DEFAULT_API_ACCESS_HASH_VERSION);
+/**
+ * The public credential id grammar. Shared by issuance validation, the
+ * authentication parser, and mask formatting so the three can never drift:
+ * issuance must never mint an id the parser would then refuse to authenticate.
+ */
+const CREDENTIAL_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+/** Reject an id issuance could mint that `parseApiAccessSecret` would then refuse to authenticate. */
+function assertIssuableCredentialId(id) {
+    requireText(id, "Credential id");
+    if (!CREDENTIAL_ID_PATTERN.test(id)) {
+        throw new Error("Credential id must contain only letters, numbers, underscores, or dashes.");
+    }
+}
 /** Parse the public credential id from an opaque secret for indexed lookup. */
 function parseApiAccessSecret(secret, prefix) {
     if (!secret.startsWith(prefix))
@@ -253,7 +284,7 @@ function parseApiAccessSecret(secret, prefix) {
         return undefined;
     const id = rest.slice(0, dot);
     const entropy = rest.slice(dot + 1);
-    if (!/^[A-Za-z0-9_-]+$/.test(id) || !/^[A-Za-z0-9_-]{20,}$/.test(entropy))
+    if (!CREDENTIAL_ID_PATTERN.test(id) || !/^[A-Za-z0-9_-]{20,}$/.test(entropy))
         return undefined;
     return { id, secret: entropy };
 }
@@ -318,7 +349,7 @@ function getApiAccessCredentialStatus(credential, now = new Date()) {
 function formatApiAccessCredentialMask(prefix, credentialId) {
     requireText(prefix, "Credential prefix");
     requireText(credentialId, "Credential id");
-    if (!/^[a-z][a-z0-9_-]*$/i.test(prefix) || !/^[A-Za-z0-9_-]+$/.test(credentialId)) {
+    if (!/^[a-z][a-z0-9_-]*$/i.test(prefix) || !CREDENTIAL_ID_PATTERN.test(credentialId)) {
         throw new Error("Credential prefix or id is malformed.");
     }
     return `${prefix}${credentialId}.…`;

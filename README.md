@@ -208,6 +208,12 @@ breaks public-id lookup and secret-only verification.
   a date-only string like `"2026-01-01"` or another loose format does not parse
   and surfaces as `INVALID` (`authorizeApiAccess`) or `MALFORMED`
   (`authenticateApiAccessCredential`).
+- `id` at issuance (both `issueApiAccessCredential` and
+  `issueReplacementApiAccessCredential`) must match `^[A-Za-z0-9_-]+$` — the
+  same grammar `parseApiAccessSecret` enforces at authentication — and the
+  composed `<prefix><id>.<secret>` must not exceed `MAX_RAW_CREDENTIAL_LENGTH`.
+  Both are rejected at issuance time so a host can never mint a credential that
+  authentication would then be unable to parse.
 
 ## Lifecycle adapters
 
@@ -245,7 +251,14 @@ audit record, or uses an ORM transaction. Those are host responsibilities.
 Use `runApiAccessCredentialLifecycleConformance` only with a disposable store
 fixture. It verifies that create, replacement, prior-credential invalidation,
 revocation, and last-used touch honor the portable contract before a host
-adopts the package.
+adopts the package — including reading each mutation back through `findById`
+and asserting the persisted state actually changed, so an adapter whose
+`touchLastUsed` (or any other lifecycle method) is a no-op fails conformance
+instead of passing silently. The last-used check compares the persisted
+`lastUsedAt` by instant, not by exact string, so an adapter that round-trips
+the timestamp through an equivalent format (for example normalizing
+`"...00Z"` to `"...00.000Z"`) still passes; it fails only when the value is
+missing, unparseable, or genuinely a different instant.
 
 ## Scope model
 
@@ -285,6 +298,17 @@ const decision = authorizeApiAccess<Scope>(issued.credential, {
 command carries an operation, resource identity, JSON payload, idempotency key,
 and an optional expected resource version. The host stores a fingerprint and
 receipt under the idempotency key, then executes against its authoritative content model.
+
+`expectedVersion`, when present, must be a non-blank string — `commands.assert`
+rejects `""` or whitespace so a caller that computed an empty version by
+mistake fails loudly instead of silently disabling
+`evaluateApiCommandPrecondition`'s optimistic-concurrency check. Omit the field
+entirely to signal "no precondition to enforce". This is enforced twice
+deliberately: `assert` rejects a blank value up front, and
+`evaluateApiCommandPrecondition` itself also fails closed on any defined value
+that does not exactly match — including a blank one — since it is a public
+export a caller can reach directly, or via an `ApiCommandEnvelope` built
+without going through `assert`.
 
 ```ts
 const commands = defineApiCommands(["page.update", "blocks.append", "block.update"] as const);
