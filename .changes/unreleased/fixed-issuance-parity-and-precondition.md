@@ -1,0 +1,6 @@
+---
+kind: fixed
+summary: Fix issuance/authentication parity, blank expectedVersion bypass, and unverified last-used conformance
+---
+
+`issueApiAccessCredential` and `issueReplacementApiAccessCredential` now validate the credential `id` against the same grammar `parseApiAccessSecret` enforces, and reject any issuance whose composed `<prefix><id>.<secret>` would exceed `MAX_RAW_CREDENTIAL_LENGTH` — previously an out-of-grammar or over-long id could be issued but could never authenticate. `defineApiCommands().assert` now rejects a blank or whitespace-only `expectedVersion` instead of letting `evaluateApiCommandPrecondition` silently treat it as "no precondition" — and `evaluateApiCommandPrecondition` itself, the exported decision function, now also fails closed on a blank `expectedVersion` rather than only relying on `assert`'s validation, since it is reachable directly and from an envelope built without `assert`. `runApiAccessCredentialLifecycleConformance` now reads a credential back after `touchLastUsed` and asserts the requested timestamp was actually persisted (compared by instant, not exact string, so an adapter that round-trips an equivalent but differently-formatted ISO timestamp still passes), so a no-op or instant-mismatched adapter fails conformance instead of passing.

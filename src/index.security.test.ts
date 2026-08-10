@@ -9,6 +9,7 @@ import {
   hashApiAccessSecret,
   issueApiAccessCredential,
   MAX_API_ACCESS_SECRET_BYTES,
+  MAX_RAW_CREDENTIAL_LENGTH,
   issueReplacementApiAccessCredential,
   parseApiAccessSecret,
   verifyApiAccessSecret,
@@ -536,5 +537,105 @@ describe("strict ISO timestamp parsing", () => {
 
   it("accepts Feb 29 in a leap year (2024) as a valid calendar date", () => {
     expect(getApiAccessCredentialStatus({ expiresAt: "2024-02-29T00:00:00Z" })).not.toBe("INVALID");
+  });
+});
+
+describe("issuance id grammar matches the authentication parser (issuance/parser parity)", () => {
+  it("rejects an id containing a space", () => {
+    expect(() =>
+      issueApiAccessCredential({ id: "credential 1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }),
+    ).toThrow("Credential id must contain only letters, numbers, underscores, or dashes.");
+  });
+
+  it("rejects an id containing a dot", () => {
+    expect(() =>
+      issueApiAccessCredential({ id: "credential.1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }),
+    ).toThrow("Credential id must contain only letters, numbers, underscores, or dashes.");
+  });
+
+  it("rejects other out-of-grammar characters (slash, at-sign, newline, unicode)", () => {
+    for (const id of ["credential/1", "credential@1", "credential\n1", "credential-é"]) {
+      expect(() =>
+        issueApiAccessCredential({ id, ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }),
+      ).toThrow("Credential id must contain only letters, numbers, underscores, or dashes.");
+    }
+  });
+
+  it("rejects an empty id with the empty-value message, not the grammar message", () => {
+    expect(() =>
+      issueApiAccessCredential({ id: "", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }),
+    ).toThrow("Credential id must not be empty.");
+  });
+
+  it("accepts a normal valid id (no over-rejection)", () => {
+    const issued = issueApiAccessCredential({ id: "credential-1_ABC", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] });
+    expect(issued.secret).toMatch(/^miz_credential-1_ABC\./);
+    expect(parseApiAccessSecret(issued.secret, "miz_")).toMatchObject({ id: "credential-1_ABC" });
+  });
+
+  it("rejects an over-long prefix+id combination that would exceed the raw-credential bound", () => {
+    const hugeId = "a".repeat(MAX_RAW_CREDENTIAL_LENGTH);
+    expect(() =>
+      issueApiAccessCredential({ id: hugeId, ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }),
+    ).toThrow(/exceeding MAX_RAW_CREDENTIAL_LENGTH/);
+  });
+
+  it("accepts exactly at the raw-credential length bound and rejects one character over it", () => {
+    const prefix = "miz_";
+    const secretBytes = 32; // base64url-encodes 32 random bytes to exactly 43 characters, deterministic regardless of content
+    const entropyLength = 43;
+    const idLength = MAX_RAW_CREDENTIAL_LENGTH - prefix.length - 1 - entropyLength;
+    const okId = "a".repeat(idLength);
+
+    const issued = issueApiAccessCredential({ id: okId, ownerId: "user-1", prefix, pepper, scopes: ["items.read"], secretBytes });
+    expect(issued.secret.length).toBe(MAX_RAW_CREDENTIAL_LENGTH);
+    expect(parseApiAccessSecret(issued.secret, prefix)).toMatchObject({ id: okId });
+
+    const tooLongId = "a".repeat(idLength + 1);
+    expect(() =>
+      issueApiAccessCredential({ id: tooLongId, ownerId: "user-1", prefix, pepper, scopes: ["items.read"], secretBytes }),
+    ).toThrow(/exceeding MAX_RAW_CREDENTIAL_LENGTH/);
+  });
+
+  it("rejects the same grammar and length violations on the replacement path, not just normal issuance", () => {
+    const original = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }).credential;
+    expect(() =>
+      issueReplacementApiAccessCredential({ credential: original, id: "credential 2", prefix: "miz_", pepper }),
+    ).toThrow("Credential id must contain only letters, numbers, underscores, or dashes.");
+    expect(() =>
+      issueReplacementApiAccessCredential({ credential: original, id: "credential.2", prefix: "miz_", pepper }),
+    ).toThrow("Credential id must contain only letters, numbers, underscores, or dashes.");
+    expect(() =>
+      issueReplacementApiAccessCredential({ credential: original, id: "a".repeat(MAX_RAW_CREDENTIAL_LENGTH), prefix: "miz_", pepper }),
+    ).toThrow(/exceeding MAX_RAW_CREDENTIAL_LENGTH/);
+  });
+
+  it("accepts a valid id on the replacement path (no over-rejection)", () => {
+    const original = issueApiAccessCredential({ id: "credential-1", ownerId: "user-1", prefix: "miz_", pepper, scopes: ["items.read"] }).credential;
+    const replacement = issueReplacementApiAccessCredential({ credential: original, id: "credential-2", prefix: "miz_", pepper });
+    expect(replacement.secret).toMatch(/^miz_credential-2\./);
+    expect(parseApiAccessSecret(replacement.secret, "miz_")).toMatchObject({ id: "credential-2" });
+  });
+
+  it("property: every credential issuance (normal and replacement) round-trips through parseApiAccessSecret", () => {
+    const cases = [
+      { id: "a", prefix: "p_", secretBytes: 16 },
+      { id: "A1_-", prefix: "prefix-", secretBytes: 32 },
+      { id: "credential-1234567890_ABCDEFG", prefix: "x_", secretBytes: 64 },
+      { id: "z".repeat(100), prefix: "miz_", secretBytes: MAX_API_ACCESS_SECRET_BYTES },
+      { id: "9", prefix: "a", secretBytes: 16 },
+      { id: "UPPER_lower-123", prefix: "org_", secretBytes: 48 },
+    ];
+    for (const { id, prefix, secretBytes } of cases) {
+      const issued = issueApiAccessCredential({ id, ownerId: "user-1", prefix, pepper, scopes: ["items.read"], secretBytes });
+      const parsed = parseApiAccessSecret(issued.secret, prefix);
+      expect(parsed, `issuance for id=${id} prefix=${prefix} must round-trip through the parser`).toBeDefined();
+      expect(parsed!.id).toBe(id);
+
+      const replaced = issueReplacementApiAccessCredential({ credential: issued.credential, id: `${id}-r`, prefix, pepper });
+      const parsedReplacement = parseApiAccessSecret(replaced.secret, prefix);
+      expect(parsedReplacement, `replacement for id=${id}-r prefix=${prefix} must round-trip through the parser`).toBeDefined();
+      expect(parsedReplacement!.id).toBe(`${id}-r`);
+    }
   });
 });
