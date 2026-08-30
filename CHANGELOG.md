@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0
+
+- Add the fleet-standard aggregate `verify` npm script
+  `npm run verify` now runs typecheck, tests, build, and the packed-consumer
+  check in one authoritative local gate, matching the convention used by every
+  other kit in the fleet.
+- Release tooling upgraded to release-kit v0.3.1, so a feature release is graded as a minor rather than a patch
+  This package's release-kit was pinned at v0.2.0, whose `stableSemver` incremented the patch component regardless of fragment kind. Any release adding public surface would therefore have been published as a patch, telling every consumer the upgrade added nothing. That was not hypothetical: during the PKG-114 cuts, alert-kit on v0.2.0 derived 0.5.1 for a release that added a whole new public module, and it was caught only because the derived version was read before cutting.
+  
+  No runtime change — release-kit is a devDependency and nothing this package exports is affected.
+- the aggregate verification gate now rejects stale committed build output
+  `npm run verify` now carries the same committed-`dist/` freshness protection as
+  the pre-push hook instead of relying on callers to remember a separate command.
+- Fix issuance/authentication parity, blank expectedVersion bypass, and unverified last-used conformance
+  `issueApiAccessCredential` and `issueReplacementApiAccessCredential` now validate the credential `id` against the same grammar `parseApiAccessSecret` enforces, and reject any issuance whose composed `<prefix><id>.<secret>` would exceed `MAX_RAW_CREDENTIAL_LENGTH` — previously an out-of-grammar or over-long id could be issued but could never authenticate. `defineApiCommands().assert` now rejects a blank or whitespace-only `expectedVersion` instead of letting `evaluateApiCommandPrecondition` silently treat it as "no precondition" — and `evaluateApiCommandPrecondition` itself, the exported decision function, now also fails closed on a blank `expectedVersion` rather than only relying on `assert`'s validation, since it is reachable directly and from an envelope built without `assert`. `runApiAccessCredentialLifecycleConformance` now reads a credential back after `touchLastUsed` and asserts the requested timestamp was actually persisted (compared by instant, not exact string, so an adapter that round-trips an equivalent but differently-formatted ISO timestamp still passes), so a no-op or instant-mismatched adapter fails conformance instead of passing.
+
 ## 0.8.1
 
 - Manage releases with release-kit (fragment-based CHANGELOG + version bump)
