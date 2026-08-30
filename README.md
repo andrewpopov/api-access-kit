@@ -10,7 +10,7 @@ request middleware, user session, or product resource authorization.
 This package is distributed through immutable GitHub tags:
 
 ```bash
-npm install github:andrewpopov/api-access-kit#v0.8.0
+npm install github:andrewpopov/api-access-kit#v0.9.0
 ```
 
 ## Quick start

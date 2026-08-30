@@ -1,6 +1,6 @@
 {
   "name": "@andrewpopov/api-access-kit",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Pure opaque API credential lifecycle and exact-scope authorization primitives. Hosts own storage, routing, and resource authorization.",
   "author": "Andrew Popov",
   "license": "MIT",
@@ -43,7 +43,7 @@
     "coverage": "vitest run --coverage",
     "verify:pack": "node scripts/verify-pack.mjs",
     "verify:dist-fresh": "node scripts/verify-dist-fresh.mjs",
-    "verify": "npm run typecheck && npm test && npm run build && npm run verify:pack",
+    "verify": "npm run typecheck && npm test && npm run build && npm run verify:dist-fresh && npm run verify:pack",
     "release:note": "release-kit note",
     "release:notes": "release-kit notes",
     "release:bump": "release-kit bump",
