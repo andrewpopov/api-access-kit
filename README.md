@@ -413,4 +413,4 @@ Every export below is derived directly from `src/index.ts` and `src/commands.ts`
 | `JsonObject` | Readonly JSON object type used by command payloads. |
 | `JsonValue` | JSON value union used by command payloads. |
 
-Run `npm test && npm run typecheck && npm run build && npm run verify:pack`.
+Run `npm test && npm run typecheck && npm run compile && npm run verify:pack`.

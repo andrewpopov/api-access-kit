@@ -9,9 +9,10 @@ Use the Node version declared in `package.json`, then run:
 
 ```bash
 npm ci
+npm run hooks
 npm run typecheck
 npm run test
-npm run build
+npm run compile
 npm run verify:pack
 npm audit --audit-level=high
 ```
