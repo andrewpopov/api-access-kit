@@ -23,7 +23,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test
-      - run: npm run build
+      - run: npm run compile
       - run: npm run verify:pack
 
   # Non-required forward-compat leg. Kept out of the `test` context name on
@@ -40,7 +40,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test
-      - run: npm run build
+      - run: npm run compile
       - run: npm run verify:pack
 
 

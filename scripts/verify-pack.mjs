@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 const scratch = mkdtempSync(join(tmpdir(), "api-access-kit-pack-"));
 try {
-  execFileSync("npm", ["run", "build"], { stdio: "inherit" });
+  execFileSync("npm", ["run", "compile"], { stdio: "inherit" });
   const tarball = execFileSync("npm", ["pack", "--json"], { encoding: "utf8" });
   const [{ filename }] = JSON.parse(tarball);
   execFileSync("npm", ["init", "-y"], { cwd: scratch, stdio: "ignore" });
